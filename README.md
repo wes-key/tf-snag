@@ -113,14 +113,16 @@ tf-snag diffs against it — matching on `guid` — and stamps each result:
 - `absent` — in the previous run, gone now (drift remediated, deprecation fixed);
   re-emitted as its own result
 
-`unchanged` is deliberately never emitted: the Scans tab hides that state by
-default, and persistent drift/deprecations need to stay visible. `updated`
-covers everything carried over; the `provenance.firstDetectionTimeUtc` it also
-sets — forwarded from the matched prior result, or "now" for a new one — is what
-tells long-standing findings from genuinely new ones. The Scans tab renders it
-as a **First Observed** date and an **Age** column. The date only becomes
-accurate from the second baselined run on (the first has no prior timestamp to
-carry).
+`unchanged` is deliberately never emitted: the Azure DevOps Scans tab's default
+Baseline filter is `new` / `updated` / `absent`, so an `unchanged` result would
+just vanish while the drift is still live. `updated` covers everything carried
+over.
+
+Each baselined result also gets `provenance.firstDetectionTimeUtc` — forwarded
+from the matched prior result, or "now" for a new one — and, since that tab has
+no Age column, a `first seen <date> (<n> days ago)` line is appended to its
+message. The date is only accurate from the second baselined run on (the first
+has no prior timestamp to carry).
 
 Without `-baseline`, `baselineState` and `provenance` are left unset and the
 Scans tab shows every row as `New`.

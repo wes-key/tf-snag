@@ -911,6 +911,33 @@ func TestBaselineForwardsFirstDetection(t *testing.T) {
 	if res.Provenance == nil || res.Provenance.FirstDetectionTimeUtc != "2026-01-02T03:04:05Z" {
 		t.Errorf("firstDetectionTimeUtc = %+v, want forwarded 2026-01-02T03:04:05Z", res.Provenance)
 	}
+	// The Scans tab has no Age column, so the date is also appended to the message.
+	if !strings.Contains(res.Message.Text, "\nfirst seen 2026-01-02 (") {
+		t.Errorf("message missing the 'first seen' line:\n%s", res.Message.Text)
+	}
+}
+
+func TestBaselineAbsentCarriesAgeLineOnce(t *testing.T) {
+	// A prior result whose message already ends with a "first seen" line.
+	prev := `{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"tf-snag","rules":[]}},"results":[{` +
+		`"ruleId":"deprecation","guid":"` + resultGUID("deprecation", "x") + `","level":"warning",` +
+		`"message":{"text":"Argument is deprecated\ndet\nfirst seen 2026-01-01 (200 days ago)"},` +
+		`"provenance":{"firstDetectionTimeUtc":"2026-01-01T00:00:00Z"}}]}]}`
+	prior, err := ParsePriorSARIF([]byte(prev))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := (&Report{Schema: ReportSchema}).WriteSARIF(&buf, nil, prior); err != nil {
+		t.Fatal(err)
+	}
+	res := parseSARIF(t, buf.Bytes()).Runs[0].Results[0]
+	if res.BaselineState != "absent" {
+		t.Fatalf("baselineState = %q, want absent", res.BaselineState)
+	}
+	if n := strings.Count(res.Message.Text, "first seen "); n != 1 {
+		t.Errorf("want exactly one 'first seen' line, got %d:\n%s", n, res.Message.Text)
+	}
 }
 
 func TestBaselineNewGetsFirstDetectionNow(t *testing.T) {

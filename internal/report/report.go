@@ -766,7 +766,7 @@ func ParsePriorSARIF(raw []byte) (*PriorResults, error) {
 			pr.byKey[resultKey(res)] = &priorResult{
 				ruleID:    res.RuleID,
 				level:     res.Level,
-				message:   res.Message.Text,
+				message:   stripAgeSuffix(res.Message.Text),
 				loc:       res.Locations,
 				logloc:    res.LogicalLocations,
 				fp:        res.PartialFingerprints,
@@ -797,7 +797,7 @@ func resultKey(res sarifResult) string {
 		}
 		return b.String()
 	}
-	return "r:" + res.RuleID + "\x00" + res.Message.Text
+	return "r:" + res.RuleID + "\x00" + stripAgeSuffix(res.Message.Text)
 }
 
 // stamp sets res.BaselineState from the prior run: unmatched -> "new", anything
@@ -812,8 +812,10 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 	}
 	p, ok := pr.byKey[resultKey(*res)]
 	if !ok {
+		now := nowUTC()
 		res.BaselineState = "new"
-		res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: nowUTC()}
+		res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: now}
+		res.Message.Text += ageSuffix(now)
 		return
 	}
 	p.matched = true
@@ -823,10 +825,40 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 		seen = nowUTC() // prior run predates provenance tracking
 	}
 	res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: seen}
+	res.Message.Text += ageSuffix(seen)
 }
 
 // nowUTC is the current time as a SARIF timestamp; a var so tests can pin it.
 var nowUTC = func() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// ageSuffix is the "\nfirst seen <date> (<n> days ago)" line appended to a
+// baselined result's message — the Azure DevOps Scans tab has no Age column, so
+// this is the only place the first-detection time is visible there. Returns ""
+// if firstSeenUTC is unparseable.
+func ageSuffix(firstSeenUTC string) string {
+	t, err := time.Parse(time.RFC3339, firstSeenUTC)
+	if err != nil {
+		return ""
+	}
+	days := int(time.Now().UTC().Sub(t).Hours() / 24)
+	switch {
+	case days <= 0:
+		return "\nfirst seen today"
+	case days == 1:
+		return "\nfirst seen " + t.Format("2006-01-02") + " (1 day ago)"
+	default:
+		return fmt.Sprintf("\nfirst seen %s (%d days ago)", t.Format("2006-01-02"), days)
+	}
+}
+
+// stripAgeSuffix removes a trailing ageSuffix line so a previous run's message
+// (which may already carry one) round-trips cleanly.
+func stripAgeSuffix(msg string) string {
+	if i := strings.LastIndex(msg, "\nfirst seen "); i >= 0 {
+		return msg[:i]
+	}
+	return msg
+}
 
 // absent returns one "absent" result per prior result that no current result
 // matched — a drift remediated or a deprecation removed since last run. Sorted
@@ -856,6 +888,7 @@ func (pr *PriorResults) absent() []sarifResult {
 		}
 		if p.firstSeen != "" {
 			res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: p.firstSeen}
+			res.Message.Text += ageSuffix(p.firstSeen)
 		}
 		out = append(out, res)
 	}
