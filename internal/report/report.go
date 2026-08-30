@@ -31,15 +31,51 @@ type Report struct {
 	Deprecations []Deprecation `json:"deprecations,omitempty"`
 }
 
-// Deprecation is one de-duplicated deprecation notice lifted from a
-// `terraform plan -json` log.
+// Deprecation is one deprecation notice from a `terraform plan -json` log,
+// collapsed across every source location that trips it.
 type Deprecation struct {
-	Severity string `json:"severity"`
-	Summary  string `json:"summary"`
-	Detail   string `json:"detail,omitempty"`
-	Address  string `json:"address,omitempty"`
-	File     string `json:"file,omitempty"`
-	Line     int    `json:"line,omitempty"`
+	Severity string            `json:"severity"`
+	Summary  string            `json:"summary"`
+	Detail   string            `json:"detail,omitempty"`
+	Sites    []DeprecationSite `json:"sites,omitempty"`
+}
+
+// DeprecationSite is one place a deprecation fires — a resource address and,
+// when the plan log carried a range, the .tf file and line.
+type DeprecationSite struct {
+	Address string `json:"address,omitempty"`
+	File    string `json:"file,omitempty"`
+	Line    int    `json:"line,omitempty"`
+}
+
+// key collapses the instances Terraform emits for one source location (a
+// count/for_each block warns once per instance, all at the same range).
+func (s DeprecationSite) key() string {
+	if s.File != "" {
+		return strings.ToLower(s.File) + "\x00" + strconv.Itoa(s.Line)
+	}
+	return "\x00\x00" + strings.ToLower(s.Address)
+}
+
+// less orders sites: located ones first, then by file, line, address.
+func (s DeprecationSite) less(o DeprecationSite) bool {
+	if (s.File == "") != (o.File == "") {
+		return s.File != ""
+	}
+	if s.File != o.File {
+		return s.File < o.File
+	}
+	if s.Line != o.Line {
+		return s.Line < o.Line
+	}
+	return s.Address < o.Address
+}
+
+func (d Deprecation) firstSite() DeprecationSite {
+	if len(d.Sites) == 0 {
+		return DeprecationSite{}
+	}
+	return d.Sites[0]
 }
 
 type ResourceReport struct {
@@ -125,47 +161,58 @@ func (r *Report) HasDrift() bool { return len(r.Drift) > 0 }
 // HasDeprecations reports whether the plan raised any deprecation warning.
 func (r *Report) HasDeprecations() bool { return len(r.Deprecations) > 0 }
 
-// Deprecations filters plan diagnostics down to deprecation notices, drops the
-// duplicates Terraform emits per resource instance and module expansion, and
-// returns them in a stable order.
+// Deprecations filters plan diagnostics to deprecation notices and collapses
+// them: one entry per distinct summary+detail, carrying every source location
+// that raised it. Terraform re-emits a notice per resource instance / module
+// expansion, and the same deprecated argument commonly appears across several
+// resources — the Scans tab de-duplicates nothing, so this is where it happens.
+// Stable order: by first site (located ones first), then summary.
 func Deprecations(diags []plan.Diagnostic) []Deprecation {
-	var out []Deprecation
-	seen := map[string]bool{}
+	byKey := map[string]*Deprecation{}
+	siteSeen := map[string]map[string]bool{}
+	var order []string
+
 	for _, d := range diags {
 		if !isDeprecation(d) {
 			continue
 		}
-		dep := Deprecation{
-			Severity: d.Severity,
-			Summary:  d.Summary,
-			Detail:   d.Detail,
-			Address:  d.Address,
-			File:     d.Filename,
-			Line:     d.Line,
+		gk := deprecationKey(d.Summary, d.Detail)
+		dep := byKey[gk]
+		if dep == nil {
+			dep = &Deprecation{Severity: d.Severity, Summary: d.Summary, Detail: d.Detail}
+			byKey[gk] = dep
+			siteSeen[gk] = map[string]bool{}
+			order = append(order, gk)
 		}
-		k := dep.key()
-		if seen[k] {
-			continue
+		if d.Severity == "error" {
+			dep.Severity = "error"
 		}
-		seen[k] = true
-		out = append(out, dep)
+		site := DeprecationSite{Address: d.Address, File: d.Filename, Line: d.Line}
+		if sk := site.key(); !siteSeen[gk][sk] {
+			siteSeen[gk][sk] = true
+			dep.Sites = append(dep.Sites, site)
+		}
 	}
 
+	if len(order) == 0 {
+		return nil
+	}
+	out := make([]Deprecation, 0, len(order))
+	for _, gk := range order {
+		dep := byKey[gk]
+		sort.SliceStable(dep.Sites, func(i, j int) bool { return dep.Sites[i].less(dep.Sites[j]) })
+		out = append(out, *dep)
+	}
 	sort.SliceStable(out, func(i, j int) bool {
-		a, b := out[i], out[j]
-		if (a.File == "") != (b.File == "") {
-			return a.File != "" // located entries first
+		si, sj := out[i].firstSite(), out[j].firstSite()
+		switch {
+		case si.less(sj):
+			return true
+		case sj.less(si):
+			return false
+		default:
+			return out[i].Summary < out[j].Summary
 		}
-		if a.File != b.File {
-			return a.File < b.File
-		}
-		if a.Line != b.Line {
-			return a.Line < b.Line
-		}
-		if a.Summary != b.Summary {
-			return a.Summary < b.Summary
-		}
-		return a.Address < b.Address
 	})
 	return out
 }
@@ -180,16 +227,14 @@ func isDeprecation(d plan.Diagnostic) bool {
 	return strings.Contains(strings.ToLower(d.Summary+" "+d.Detail), "deprecat")
 }
 
-// key identifies "the same deprecation" across the duplicates Terraform emits.
-// Same for the SARIF partialFingerprint. A located notice keys off file+line+
-// summary (every instance of one deprecated argument shares that); an unlocated
-// one falls back to address+summary.
-func (d Deprecation) key() string {
-	if d.File != "" {
-		return strings.ToLower(d.File) + "\x00" + strconv.Itoa(d.Line) + "\x00" + strings.ToLower(d.Summary)
-	}
-	return strings.ToLower(d.Address) + "\x00" + strings.ToLower(d.Summary)
+// deprecationKey identifies "the same deprecation" regardless of where it
+// fires — its summary plus detail. Used to group notices and as the stable
+// SARIF partialFingerprint.
+func deprecationKey(summary, detail string) string {
+	return strings.ToLower(summary) + "\x00" + strings.ToLower(detail)
 }
+
+func (d Deprecation) key() string { return deprecationKey(d.Summary, d.Detail) }
 
 // identityOf pulls a human identifier out of a resource's state, preferring the
 // short name over the long id/arn.
@@ -475,6 +520,7 @@ type sarifResult struct {
 	BaselineState       string            `json:"baselineState,omitempty"`
 	Message             sarifText         `json:"message"`
 	Locations           []sarifLocation   `json:"locations,omitempty"`
+	RelatedLocations    []sarifLocation   `json:"relatedLocations,omitempty"`
 	LogicalLocations    []sarifLogicalLoc `json:"logicalLocations,omitempty"`
 	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
 	Properties          map[string]string `json:"properties,omitempty"`
@@ -576,24 +622,24 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 			PartialFingerprints: map[string]string{"deprecation": d.key()},
 			Properties:          deprecationProps(d),
 		}
-		if d.Address != "" {
-			res.LogicalLocations = []sarifLogicalLoc{{
-				FullyQualifiedName: d.Address,
-				Name:               resourceName(d.Address),
-				Kind:               "resource",
-			}}
-		}
-
-		var loc sarifLocation
-		if d.File != "" {
-			loc.PhysicalLocation.ArtifactLocation.URI = d.File
-			if d.Line > 0 {
-				loc.PhysicalLocation.Region = &sarifRegion{StartLine: d.Line}
+		for i, s := range d.Sites {
+			if s.Address != "" {
+				res.LogicalLocations = append(res.LogicalLocations, sarifLogicalLoc{
+					FullyQualifiedName: s.Address,
+					Name:               resourceName(s.Address),
+					Kind:               "resource",
+				})
 			}
-		} else {
-			loc.PhysicalLocation.ArtifactLocation.URI = d.Address
+			loc := siteLocation(s)
+			if i == 0 {
+				res.Locations = []sarifLocation{loc}
+			} else {
+				res.RelatedLocations = append(res.RelatedLocations, loc)
+			}
 		}
-		res.Locations = []sarifLocation{loc}
+		if len(res.Locations) == 0 {
+			res.Locations = []sarifLocation{siteLocation(DeprecationSite{})}
+		}
 
 		run.Results = append(run.Results, res)
 	}
@@ -666,20 +712,63 @@ func sarifSeverityLevel(sev string) string {
 	return "warning"
 }
 
-// deprecationMessage is the Scans-grid message for a deprecation: the summary on
-// line 1, the detail (newlines flattened, clipped) on line 2. The Scans tab
-// renders message.text with white-space:pre-line, so the break shows.
-func deprecationMessage(d Deprecation) string {
-	if d.Detail == "" {
-		return d.Summary
+// siteLocation is the SARIF location for one deprecation site: the .tf file and
+// line when known, otherwise the resource address as bare location text.
+func siteLocation(s DeprecationSite) sarifLocation {
+	var loc sarifLocation
+	if s.File != "" {
+		loc.PhysicalLocation.ArtifactLocation.URI = s.File
+		if s.Line > 0 {
+			loc.PhysicalLocation.Region = &sarifRegion{StartLine: s.Line}
+		}
+	} else {
+		loc.PhysicalLocation.ArtifactLocation.URI = s.Address
 	}
-	return d.Summary + "\n" + clip(strings.ReplaceAll(d.Detail, "\n", " "), 400)
+	return loc
+}
+
+// siteLabel renders one site as "address (file:line)", degrading to whichever
+// half is known.
+func siteLabel(s DeprecationSite) string {
+	loc := s.File
+	if s.File != "" && s.Line > 0 {
+		loc = fmt.Sprintf("%s:%d", s.File, s.Line)
+	}
+	switch {
+	case s.Address != "" && loc != "":
+		return s.Address + " (" + loc + ")"
+	case s.Address != "":
+		return s.Address
+	default:
+		return loc
+	}
+}
+
+// deprecationMessage is the Scans-grid message: summary on line 1, detail
+// (newlines flattened, clipped) on line 2, then one "address (file:line)" line
+// per site — always, so a lone deprecation shows where it is just like a
+// multi-site one does. The Scans tab renders message.text with
+// white-space:pre-line, so the breaks show.
+func deprecationMessage(d Deprecation) string {
+	b := d.Summary
+	if d.Detail != "" {
+		b += "\n" + clip(strings.ReplaceAll(d.Detail, "\n", " "), 400)
+	}
+	for _, s := range d.Sites {
+		if lbl := siteLabel(s); lbl != "" {
+			b += "\n" + lbl
+		}
+	}
+	return b
 }
 
 func deprecationProps(d Deprecation) map[string]string {
 	p := map[string]string{"severity": d.Severity}
-	if d.Address != "" {
-		p["address"] = d.Address
+	switch {
+	case len(d.Sites) > 1:
+		p["count"] = strconv.Itoa(len(d.Sites))
+	case len(d.Sites) == 1 && d.Sites[0].Address != "":
+		p["address"] = d.Sites[0].Address
 	}
 	return p
 }
@@ -806,14 +895,10 @@ func (r *Report) writeDeprecations(bw *errWriter, c palette) {
 	}
 	bw.printf("\n%sdeprecation warning(s): %d%s\n", c.dim, len(r.Deprecations), c.reset)
 	for _, d := range r.Deprecations {
-		loc := d.File
-		if d.File != "" && d.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", d.File, d.Line)
+		bw.printf("  %s%s%s\n", c.yellow, d.Summary, c.reset)
+		for _, s := range d.Sites {
+			bw.printf("      %s%s%s\n", c.dim, siteLabel(s), c.reset)
 		}
-		if loc == "" {
-			loc = d.Address
-		}
-		bw.printf("  %s%s%s  %s\n", c.yellow, loc, c.reset, d.Summary)
 	}
 }
 

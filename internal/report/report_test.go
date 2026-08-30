@@ -355,6 +355,15 @@ func TestClipTruncatesLongValues(t *testing.T) {
 	}
 }
 
+type sarifTestLoc struct {
+	PhysicalLocation struct {
+		ArtifactLocation struct{ URI string } `json:"artifactLocation"`
+		Region           *struct {
+			StartLine int `json:"startLine"`
+		} `json:"region"`
+	} `json:"physicalLocation"`
+}
+
 type sarifDoc struct {
 	Version string `json:"version"`
 	Runs    []struct {
@@ -375,14 +384,8 @@ type sarifDoc struct {
 				Text     string `json:"text"`
 				Markdown string `json:"markdown"` // must stay absent
 			} `json:"message"`
-			Locations []struct {
-				PhysicalLocation struct {
-					ArtifactLocation struct{ URI string } `json:"artifactLocation"`
-					Region           *struct {
-						StartLine int `json:"startLine"`
-					} `json:"region"`
-				} `json:"physicalLocation"`
-			} `json:"locations"`
+			Locations        []sarifTestLoc `json:"locations"`
+			RelatedLocations []sarifTestLoc `json:"relatedLocations"`
 			LogicalLocations []struct {
 				FullyQualifiedName string `json:"fullyQualifiedName"`
 			} `json:"logicalLocations"`
@@ -530,6 +533,7 @@ func TestWriteMarkdownNoDrift(t *testing.T) {
 
 func sampleDiags() []plan.Diagnostic {
 	return []plan.Diagnostic{
+		// Same argument, same source line, two instances -> one site.
 		{Severity: "warning", Summary: "Argument is deprecated", Detail: `The "foo" argument is deprecated. Use "bar".`,
 			Address: "module.a.azurerm_x.y", Filename: "modules/a/main.tf", Line: 12},
 		{Severity: "warning", Summary: "Argument is deprecated", Detail: `The "foo" argument is deprecated. Use "bar".`,
@@ -545,16 +549,52 @@ func TestDeprecationsFilterDedupeSort(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d deprecations, want 2: %+v", len(got), got)
 	}
-	// Located entries, sorted by file then line: main.tf:5 before modules/a/main.tf:12.
-	if got[0].File != "main.tf" || got[0].Line != 5 {
-		t.Errorf("got[0] = %s:%d, want main.tf:5", got[0].File, got[0].Line)
+	// Sorted by first site: main.tf:5 before modules/a/main.tf:12.
+	if got[0].Summary != "Deprecated attribute" || len(got[0].Sites) != 1 ||
+		got[0].Sites[0].File != "main.tf" || got[0].Sites[0].Line != 5 {
+		t.Errorf("got[0] = %+v", got[0])
 	}
-	if got[1].File != "modules/a/main.tf" || got[1].Line != 12 {
-		t.Errorf("got[1] = %s:%d, want modules/a/main.tf:12", got[1].File, got[1].Line)
+	// The two instances at modules/a/main.tf:12 collapse to a single site.
+	if got[1].Summary != "Argument is deprecated" || len(got[1].Sites) != 1 ||
+		got[1].Sites[0].File != "modules/a/main.tf" || got[1].Sites[0].Line != 12 ||
+		got[1].Sites[0].Address != "module.a.azurerm_x.y" {
+		t.Errorf("got[1] = %+v", got[1])
 	}
-	// First occurrence of the deduped pair wins (.y, not .z).
-	if got[1].Address != "module.a.azurerm_x.y" {
-		t.Errorf("got[1].Address = %q, want module.a.azurerm_x.y", got[1].Address)
+}
+
+func TestDeprecationsCollapsesAcrossLocations(t *testing.T) {
+	det := "`live_trace_enabled` has been deprecated in favor of `live_trace`."
+	in := []plan.Diagnostic{
+		{Severity: "warning", Summary: "Argument is deprecated", Detail: det,
+			Address: "azurerm_signalr_service.a", Filename: "main.tf", Line: 46},
+		{Severity: "warning", Summary: "Argument is deprecated", Detail: det,
+			Address: "azurerm_signalr_service.b", Filename: "main.tf", Line: 59},
+		{Severity: "warning", Summary: "Argument is deprecated", Detail: det,
+			Address: "azurerm_signalr_service.c", Filename: "main.tf", Line: 73},
+	}
+	got := Deprecations(in)
+	if len(got) != 1 {
+		t.Fatalf("want 1 collapsed deprecation, got %d: %+v", len(got), got)
+	}
+	if len(got[0].Sites) != 3 {
+		t.Fatalf("want 3 sites, got %+v", got[0].Sites)
+	}
+	// Sites sorted by line.
+	for i, want := range []int{46, 59, 73} {
+		if got[0].Sites[i].Line != want {
+			t.Errorf("site[%d].Line = %d, want %d", i, got[0].Sites[i].Line, want)
+		}
+	}
+}
+
+func TestDeprecationsSeverityEscalates(t *testing.T) {
+	in := []plan.Diagnostic{
+		{Severity: "warning", Summary: "X is deprecated", Detail: "d", Address: "a.a", Filename: "m.tf", Line: 1},
+		{Severity: "error", Summary: "X is deprecated", Detail: "d", Address: "a.b", Filename: "m.tf", Line: 2},
+	}
+	got := Deprecations(in)
+	if len(got) != 1 || got[0].Severity != "error" {
+		t.Fatalf("want one error-severity deprecation, got %+v", got)
 	}
 }
 
@@ -581,9 +621,7 @@ func TestWriteSARIFDeprecationResultShape(t *testing.T) {
 			Severity: "warning",
 			Summary:  "Argument is deprecated",
 			Detail:   "The \"foo\" argument is deprecated.\nUse \"bar\" instead.",
-			Address:  "module.a.azurerm_x.y",
-			File:     "modules/a/main.tf",
-			Line:     12,
+			Sites:    []DeprecationSite{{Address: "module.a.azurerm_x.y", File: "modules/a/main.tf", Line: 12}},
 		}},
 	}
 	var buf bytes.Buffer
@@ -595,25 +633,25 @@ func TestWriteSARIFDeprecationResultShape(t *testing.T) {
 		t.Fatalf("want 1 result, got %d: %s", len(run.Results), buf.String())
 	}
 	res := run.Results[0]
-	if res.RuleID != "deprecation" {
-		t.Fatalf("ruleId = %q, want deprecation", res.RuleID)
-	}
-	if res.Level != "warning" {
-		t.Errorf("level = %q, want warning", res.Level)
+	if res.RuleID != "deprecation" || res.Level != "warning" {
+		t.Fatalf("ruleId/level = %q/%q", res.RuleID, res.Level)
 	}
 	if res.Message.Markdown != "" {
 		t.Errorf("message.markdown should be absent, got %q", res.Message.Markdown)
 	}
-	lines := strings.SplitN(res.Message.Text, "\n", 2)
-	if lines[0] != "Argument is deprecated" {
-		t.Errorf("message line 1 = %q", lines[0])
-	}
-	if len(lines) != 2 || !strings.Contains(lines[1], "Use \"bar\" instead.") || strings.Contains(lines[1], "\n") {
-		t.Errorf("message line 2 = %q (want single flattened detail line)", lines)
+	// summary / flattened detail / the one site (shown even for a lone deprecation).
+	lines := strings.Split(res.Message.Text, "\n")
+	if len(lines) != 3 || lines[0] != "Argument is deprecated" ||
+		!strings.Contains(lines[1], "Use \"bar\" instead.") ||
+		lines[2] != "module.a.azurerm_x.y (modules/a/main.tf:12)" {
+		t.Errorf("message = %q", res.Message.Text)
 	}
 	loc := res.Locations[0].PhysicalLocation
 	if loc.ArtifactLocation.URI != "modules/a/main.tf" || loc.Region == nil || loc.Region.StartLine != 12 {
 		t.Errorf("location = %q %+v", loc.ArtifactLocation.URI, loc.Region)
+	}
+	if len(res.RelatedLocations) != 0 {
+		t.Errorf("single-site result should have no relatedLocations, got %+v", res.RelatedLocations)
 	}
 	if len(res.LogicalLocations) != 1 || res.LogicalLocations[0].FullyQualifiedName != "module.a.azurerm_x.y" {
 		t.Errorf("logicalLocations = %+v", res.LogicalLocations)
@@ -626,10 +664,19 @@ func TestWriteSARIFDeprecationResultShape(t *testing.T) {
 	}
 }
 
-func TestWriteSARIFDeprecationNoLocation(t *testing.T) {
+func TestWriteSARIFDeprecationMultiSite(t *testing.T) {
 	rep := &Report{
-		Schema:       ReportSchema,
-		Deprecations: []Deprecation{{Severity: "error", Summary: "Deprecated resource", Address: "azurerm_p.q"}},
+		Schema: ReportSchema,
+		Deprecations: []Deprecation{{
+			Severity: "warning",
+			Summary:  "Argument is deprecated",
+			Detail:   "live_trace_enabled is deprecated.",
+			Sites: []DeprecationSite{
+				{Address: "azurerm_signalr_service.a", File: "main.tf", Line: 46},
+				{Address: "azurerm_signalr_service.b", File: "main.tf", Line: 59},
+				{Address: "azurerm_signalr_service.c", File: "main.tf", Line: 73},
+			},
+		}},
 	}
 	var buf bytes.Buffer
 	if err := rep.WriteSARIF(&buf, nil); err != nil {
@@ -640,11 +687,41 @@ func TestWriteSARIFDeprecationNoLocation(t *testing.T) {
 		t.Fatalf("want 1 result, got %d", len(run.Results))
 	}
 	res := run.Results[0]
-	if res.RuleID != "deprecation" {
-		t.Fatalf("ruleId = %q, want deprecation", res.RuleID)
+	// First site is the primary location, the other two are related.
+	if res.Locations[0].PhysicalLocation.Region.StartLine != 46 {
+		t.Errorf("primary location = %+v", res.Locations[0])
 	}
-	if res.Level != "error" {
-		t.Errorf("level = %q, want error", res.Level)
+	if len(res.RelatedLocations) != 2 ||
+		res.RelatedLocations[0].PhysicalLocation.Region.StartLine != 59 ||
+		res.RelatedLocations[1].PhysicalLocation.Region.StartLine != 73 {
+		t.Errorf("relatedLocations = %+v", res.RelatedLocations)
+	}
+	if len(res.LogicalLocations) != 3 {
+		t.Errorf("want 3 logicalLocations, got %+v", res.LogicalLocations)
+	}
+	// Message lists every site after the detail line.
+	for _, want := range []string{"azurerm_signalr_service.a (main.tf:46)", "(main.tf:59)", "(main.tf:73)"} {
+		if !strings.Contains(res.Message.Text, want) {
+			t.Errorf("message missing %q:\n%s", want, res.Message.Text)
+		}
+	}
+	if res.Properties["count"] != "3" || res.Properties["address"] != "" {
+		t.Errorf("properties = %+v", res.Properties)
+	}
+}
+
+func TestWriteSARIFDeprecationNoLocation(t *testing.T) {
+	rep := &Report{
+		Schema:       ReportSchema,
+		Deprecations: []Deprecation{{Severity: "error", Summary: "Deprecated resource", Sites: []DeprecationSite{{Address: "azurerm_p.q"}}}},
+	}
+	var buf bytes.Buffer
+	if err := rep.WriteSARIF(&buf, nil); err != nil {
+		t.Fatal(err)
+	}
+	res := parseSARIF(t, buf.Bytes()).Runs[0].Results[0]
+	if res.RuleID != "deprecation" || res.Level != "error" {
+		t.Fatalf("ruleId/level = %q/%q", res.RuleID, res.Level)
 	}
 	loc := res.Locations[0].PhysicalLocation
 	if loc.ArtifactLocation.URI != "azurerm_p.q" || loc.Region != nil {
@@ -654,24 +731,32 @@ func TestWriteSARIFDeprecationNoLocation(t *testing.T) {
 
 func TestWriteTextShowsDeprecations(t *testing.T) {
 	rep := Build(deletedVaultPlan())
-	rep.Deprecations = []Deprecation{
-		{Severity: "warning", Summary: "Argument is deprecated", File: "main.tf", Line: 5},
-	}
+	rep.Deprecations = []Deprecation{{
+		Severity: "warning", Summary: "Argument is deprecated",
+		Sites: []DeprecationSite{
+			{Address: "azurerm_signalr_service.a", File: "main.tf", Line: 46},
+			{Address: "azurerm_signalr_service.b", File: "main.tf", Line: 59},
+		},
+	}}
 	var buf bytes.Buffer
 	if err := rep.WriteText(&buf); err != nil {
 		t.Fatal(err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, "deprecation warning(s): 1") || !strings.Contains(got, "main.tf:5") ||
-		!strings.Contains(got, "Argument is deprecated") {
-		t.Errorf("text missing deprecation section:\n%s", got)
+	for _, want := range []string{
+		"deprecation warning(s): 1", "Argument is deprecated",
+		"azurerm_signalr_service.a (main.tf:46)", "azurerm_signalr_service.b (main.tf:59)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("text missing %q:\n%s", want, got)
+		}
 	}
 }
 
 func TestWriteTextNoDriftButDeprecations(t *testing.T) {
 	rep := Build(&plan.Plan{})
 	rep.Deprecations = []Deprecation{
-		{Severity: "warning", Summary: "Deprecated attribute", Address: "azurerm_p.q"},
+		{Severity: "warning", Summary: "Deprecated attribute", Sites: []DeprecationSite{{Address: "azurerm_p.q"}}},
 	}
 	var buf bytes.Buffer
 	if err := rep.WriteText(&buf); err != nil {

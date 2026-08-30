@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -72,6 +73,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	planPath := fs.String("plan", "", "path to `terraform show -json` output (default: stdin)")
 	planLogPath := fs.String("plan-log", "", "path to `terraform plan -json` NDJSON log (required by -check deprecations)")
+	planLogDir := fs.String("plan-log-dir", "", "directory `terraform plan` ran in, relative to the repo root; prepended to deprecation file locations so their links resolve")
 	checks := fs.String("check", "drift", "analyses to run: drift, deprecations, or a comma `list` (also: all)")
 	format := fs.String("format", "text", "output format: text, json, markdown, junit or sarif")
 	exitCode := fs.Bool("exit-code", true, "exit 2 when drift or a deprecation is detected")
@@ -103,6 +105,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *planLogPath != "" && !deprOn {
 		fmt.Fprintln(stderr, "tf-snag: -plan-log set but -check does not include deprecations")
+		return 2
+	}
+	if *planLogDir != "" && !deprOn {
+		fmt.Fprintln(stderr, "tf-snag: -plan-log-dir set but -check does not include deprecations")
 		return 2
 	}
 	if *planPath != "" && !driftOn {
@@ -152,6 +158,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if err != nil {
 			fmt.Fprintln(stderr, "tf-snag:", err)
 			return 2
+		}
+		// `terraform plan -json` reports diagnostic ranges relative to the dir
+		// it ran in (e.g. `main.tf`). Prepend that dir so the paths are
+		// repo-root-relative and their Scans-tab links resolve.
+		if dir := filepath.ToSlash(*planLogDir); dir != "" {
+			for i := range diags {
+				if f := filepath.ToSlash(diags[i].Filename); f != "" && !path.IsAbs(f) {
+					diags[i].Filename = path.Join(dir, f)
+				}
+			}
 		}
 	}
 

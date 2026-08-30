@@ -145,6 +145,45 @@ func TestRunDeprecationsSARIF(t *testing.T) {
 	if strings.Contains(s, `"ruleId": "resource-drift"`) {
 		t.Errorf("did not expect any resource-drift results\n%s", s)
 	}
+	// Without -plan-log-dir the fixture's paths are used verbatim.
+	if !strings.Contains(s, `"uri": "main.tf"`) || strings.Contains(s, `"uri": "terraform/main.tf"`) {
+		t.Errorf("expected bare fixture paths\n%s", s)
+	}
+}
+
+func TestRunDeprecationsPlanLogDirPrefixesPaths(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{
+		"-check", "deprecations",
+		"-plan-log", "testdata/plan-log-deprecations.jsonl",
+		"-plan-log-dir", "terraform",
+		"-format", "sarif",
+	}, strings.NewReader(""), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	s := out.String()
+	for _, want := range []string{`"uri": "terraform/main.tf"`, `"uri": "terraform/modules/a/main.tf"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("sarif missing prefixed path %q\n---\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, `"uri": "main.tf"`) {
+		t.Errorf("unprefixed path leaked through\n%s", s)
+	}
+	// Message lines carry the prefixed location too.
+	if !strings.Contains(s, "(terraform/main.tf:5)") {
+		t.Errorf("message location not prefixed\n%s", s)
+	}
+}
+
+func TestRunPlanLogDirWithoutDeprecations(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-plan-log-dir", "terraform", "-plan", "testdata/plan-drift.json"},
+		strings.NewReader(""), &out, &errb)
+	if code != 2 || !strings.Contains(errb.String(), "-plan-log-dir set but") {
+		t.Errorf("exit=%d stderr=%q", code, errb.String())
+	}
 }
 
 func TestRunBothChecksSARIF(t *testing.T) {
