@@ -110,13 +110,16 @@ something the SARIF can set. No `fullDescription`/`helpUri` on the rule and no
 cell is the resource address as plain text.
 
 With `-check deprecations` the log carries a second rule, `deprecation`, one
-result per de-duplicated notice — summary on message line 1, detail on line 2,
-location taken straight from the diagnostic's `range` (no `-source` needed). The
-two rules render as two collapsible groups; the Scans tab orders groups by
-result count (or alphabetically if the viewer re-sorts), so their vertical order
-is not something the file controls. The deprecation filter is a substring match
-on "deprecat" in the summary/detail — provider notices worded differently are
-missed for now.
+result per distinct notice (keyed on summary + detail). The Scans tab
+de-duplicates nothing, so tf-snag collapses here: every source location that
+trips the same deprecation becomes one row — summary on message line 1, detail
+on line 2, then one `address (file:line)` line per location; the first location
+is the result's `location` (no `-source` needed — it comes from the diagnostic's
+`range`) and the rest are `relatedLocations`. The two rules render as two
+collapsible groups; the Scans tab orders groups by result count (or
+alphabetically if the viewer re-sorts), so their vertical order is not something
+the file controls. The deprecation filter is a substring match on "deprecat" in
+the summary/detail — provider notices worded differently are missed for now.
 
 Exit codes: `0` clean, `2` drift or a deprecation detected, `2` on any error.
 
