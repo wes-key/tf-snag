@@ -858,10 +858,10 @@ func TestBaselineStamping(t *testing.T) {
 
 	got := baselineByID(t, cur.Bytes())
 	want := map[string]string{
-		"azurerm_storage_account.data": "updated",   // matched, message changed
-		"azurerm_key_vault.new":        "new",       // not in prior
-		"azurerm_x.y":                  "unchanged", // deprecation, identical
-		"azurerm_dns_zone.gone":        "absent",    // in prior, gone now
+		"azurerm_storage_account.data": "updated", // matched (message changed)
+		"azurerm_key_vault.new":        "new",     // not in prior
+		"azurerm_x.y":                  "updated", // deprecation, carried over
+		"azurerm_dns_zone.gone":        "absent",  // in prior, gone now
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d results %v, want %d %v", len(got), got, len(want), want)
@@ -905,8 +905,8 @@ func TestBaselineForwardsFirstDetection(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := parseSARIF(t, buf.Bytes()).Runs[0].Results[0]
-	if res.BaselineState != "unchanged" {
-		t.Errorf("baselineState = %q, want unchanged", res.BaselineState)
+	if res.BaselineState != "updated" {
+		t.Errorf("baselineState = %q, want updated (carried over, never 'unchanged')", res.BaselineState)
 	}
 	if res.Provenance == nil || res.Provenance.FirstDetectionTimeUtc != "2026-01-02T03:04:05Z" {
 		t.Errorf("firstDetectionTimeUtc = %+v, want forwarded 2026-01-02T03:04:05Z", res.Provenance)

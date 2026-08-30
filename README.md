@@ -66,7 +66,7 @@ tf-snag -plan plan.json [flags]
   -source dir         Terraform source dir; sarif locations link to the .tf
                       declaring each resource (best effort, first match wins)
   -baseline file      previous run's tf-snag.sarif; with -format sarif, stamps
-                      each result new / unchanged / updated / absent
+                      each result new / updated / absent
   -exit-code          exit 2 when drift or a deprecation is detected (default true)
   -version            print version and exit
 ```
@@ -109,21 +109,21 @@ identity) and a `partialFingerprints` entry (`driftAddress/v1`,
 tf-snag diffs against it — matching on `guid` — and stamps each result:
 
 - `new` — not in the previous run
-- `unchanged` — matched, same message
-- `updated` — matched, message changed (an attribute diff moved, a deprecation
-  gained/lost a site, …)
+- `updated` — was also in the previous run (whether or not its message changed)
 - `absent` — in the previous run, gone now (drift remediated, deprecation fixed);
   re-emitted as its own result
 
-It also sets `provenance.firstDetectionTimeUtc` — forwarded from the matched
-prior result, or "now" for a new one — which the Scans tab renders as a **First
-Observed** date and an **Age** column, so you can see when a drift or deprecation
-first surfaced. The date only becomes accurate from the second baselined run on
-(the first has no prior timestamp to carry).
+`unchanged` is deliberately never emitted: the Scans tab hides that state by
+default, and persistent drift/deprecations need to stay visible. `updated`
+covers everything carried over; the `provenance.firstDetectionTimeUtc` it also
+sets — forwarded from the matched prior result, or "now" for a new one — is what
+tells long-standing findings from genuinely new ones. The Scans tab renders it
+as a **First Observed** date and an **Age** column. The date only becomes
+accurate from the second baselined run on (the first has no prior timestamp to
+carry).
 
 Without `-baseline`, `baselineState` and `provenance` are left unset and the
-Scans tab shows every row as `New`. The tab hides `Unchanged` by default, so a
-steady-state run looks near-empty once baselining is on.
+Scans tab shows every row as `New`.
 
 Drift results share one rule, `resource-drift`; the kind (`Deleted` / `Updated`
 / `Created`) leads the message. No glyph on it — the severity icon in column 0

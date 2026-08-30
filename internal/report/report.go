@@ -594,9 +594,10 @@ var sarifRules = []sarifRule{
 // Every result carries a deterministic `guid` (see resultGUID) and a
 // `partialFingerprints` entry. When prior is non-nil (from ParsePriorSARIF of
 // the previous run's tf-snag.sarif), each result is stamped with a
-// `baselineState` — `new` / `unchanged` / `updated` — by matching on guid, and
-// any prior result that has now gone is re-emitted as `absent`. When prior is
-// nil, no `baselineState` is set and the Scans tab shows every row as "New".
+// `baselineState` — `new`, or `updated` when it was also in the previous run —
+// by matching on guid, and any prior result that has now gone is re-emitted as
+// `absent`. When prior is nil, no `baselineState` is set and the Scans tab
+// shows every row as "New".
 func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc, prior *PriorResults) error {
 	run := sarifRun{
 		Tool: sarifTool{Driver: sarifDriver{
@@ -722,7 +723,7 @@ func resultGUID(kind, identity string) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// --- baseline (new / unchanged / updated / absent) -----------------------
+// --- baseline (new / updated / absent) ---------------------------------
 
 // PriorResults is the previous run's SARIF results, indexed by identity, for
 // baseline comparison. The zero value / a nil *PriorResults means "no baseline"
@@ -799,10 +800,12 @@ func resultKey(res sarifResult) string {
 	return "r:" + res.RuleID + "\x00" + res.Message.Text
 }
 
-// stamp sets res.BaselineState from the prior run: unmatched -> "new", matched
-// with the same message -> "unchanged", matched but changed -> "updated". It
-// also sets provenance.firstDetectionTimeUtc — forwarded from the prior result,
-// or now for a new one. A nil receiver (no baseline) is a no-op.
+// stamp sets res.BaselineState from the prior run: unmatched -> "new", anything
+// carried over from the previous run -> "updated". We never emit "unchanged":
+// the Scans tab hides that state by default and we want persistent drift and
+// deprecations to stay on screen — provenance.firstDetectionTimeUtc (forwarded
+// from the prior result, or now for a new one) is what tells long-standing
+// findings apart from genuinely new ones. A nil receiver is a no-op.
 func (pr *PriorResults) stamp(res *sarifResult) {
 	if pr == nil {
 		return
@@ -814,11 +817,7 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 		return
 	}
 	p.matched = true
-	if p.message == res.Message.Text {
-		res.BaselineState = "unchanged"
-	} else {
-		res.BaselineState = "updated"
-	}
+	res.BaselineState = "updated"
 	seen := p.firstSeen
 	if seen == "" {
 		seen = nowUTC() // prior run predates provenance tracking

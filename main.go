@@ -79,7 +79,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	exitCode := fs.Bool("exit-code", true, "exit 2 when drift or a deprecation is detected")
 	color := fs.String("color", "auto", "colorize text output: auto, always or never")
 	source := fs.String("source", "", "Terraform source `dir`; when set, sarif locations link to the .tf file declaring each resource")
-	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif` then stamps each result new/unchanged/updated/absent")
+	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif` then stamps each result new/updated/absent")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: terraform show -json PLANFILE | tf-snag [flags]")
