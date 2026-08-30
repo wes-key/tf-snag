@@ -59,7 +59,7 @@ func (c Change) Action() string {
 // Parse decodes `terraform show -json` output and sanity-checks that it is a
 // plan representation rather than some other JSON.
 func Parse(raw []byte) (*Plan, error) {
-	raw, err := decodeUTF(raw)
+	raw, err := DecodeUTF(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parsing plan JSON: %w", err)
 	}
@@ -73,11 +73,11 @@ func Parse(raw []byte) (*Plan, error) {
 	return &p, nil
 }
 
-// decodeUTF strips a UTF-8 BOM and transcodes UTF-16 (LE or BE, identified by
+// DecodeUTF strips a UTF-8 BOM and transcodes UTF-16 (LE or BE, identified by
 // its BOM) to UTF-8. PowerShell's `>` and `Out-File` redirection writes UTF-16
 // LE with a BOM by default, so `terraform show -json PLANFILE > plan.json` on
 // Windows would otherwise hand us bytes Go's JSON decoder cannot read.
-func decodeUTF(raw []byte) ([]byte, error) {
+func DecodeUTF(raw []byte) ([]byte, error) {
 	switch {
 	case bytes.HasPrefix(raw, []byte{0xEF, 0xBB, 0xBF}):
 		return raw[3:], nil

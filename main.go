@@ -79,6 +79,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	exitCode := fs.Bool("exit-code", true, "exit 2 when drift or a deprecation is detected")
 	color := fs.String("color", "auto", "colorize text output: auto, always or never")
 	source := fs.String("source", "", "Terraform source `dir`; when set, sarif locations link to the .tf file declaring each resource")
+	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif` then stamps each result new/unchanged/updated/absent")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: terraform show -json PLANFILE | tf-snag [flags]")
@@ -109,6 +110,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *planLogDir != "" && !deprOn {
 		fmt.Fprintln(stderr, "tf-snag: -plan-log-dir set but -check does not include deprecations")
+		return 2
+	}
+	if *baseline != "" && *format != "sarif" {
+		fmt.Fprintln(stderr, "tf-snag: -baseline only applies to -format sarif")
 		return 2
 	}
 	if *planPath != "" && !driftOn {
@@ -201,7 +206,20 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 				return 2
 			}
 		}
-		err = rep.WriteSARIF(stdout, srcIndex)
+		var prior *report.PriorResults
+		if *baseline != "" {
+			praw, rerr := os.ReadFile(*baseline)
+			if rerr != nil {
+				fmt.Fprintln(stderr, "tf-snag:", rerr)
+				return 2
+			}
+			prior, err = report.ParsePriorSARIF(praw)
+			if err != nil {
+				fmt.Fprintln(stderr, "tf-snag:", err)
+				return 2
+			}
+		}
+		err = rep.WriteSARIF(stdout, srcIndex, prior)
 	default:
 		fmt.Fprintf(stderr, "tf-snag: unknown format %q (want text, json, markdown, junit or sarif)\n", *format)
 		return 2

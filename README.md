@@ -65,6 +65,8 @@ tf-snag -plan plan.json [flags]
   -color string       colorize text output: auto | always | never (default "auto")
   -source dir         Terraform source dir; sarif locations link to the .tf
                       declaring each resource (best effort, first match wins)
+  -baseline file      previous run's tf-snag.sarif; with -format sarif, stamps
+                      each result new / unchanged / updated / absent
   -exit-code          exit 2 when drift or a deprecation is detected (default true)
   -version            print version and exit
 ```
@@ -99,15 +101,23 @@ The `sarif` output is one flat result per drifted resource:
 | severity icon | `level` | ⛔ delete/create · ⚠ update |
 | Result | `message` | `Deleted — name=kv01` · `Updated — tags.Owner: null → "Wes"` |
 | Path (link) | `physicalLocation` (needs `-source`) | `terraform/modules/kv/main.tf` |
-| Baseline | `baselineState` | always `New` from tf-snag — see below |
+| Baseline | `baselineState` | `New` unless `-baseline` is given — see below |
 
-Every result also carries a deterministic `guid` (RFC 4122 v5 of the finding's
-kind + identity) and a `partialFingerprints` entry (`driftAddress/v1`,
-`deprecation/v1`). tf-snag does **not** set `baselineState` — so every row shows
-`New` in the Scans tab until a pipeline step runs
-`Sarif.Multitool match-results-forwarding` against the previous run's
-`tf-snag.sarif`, matching on `guid` / `partialFingerprints` and stamping
-`new` / `unchanged` / `updated` / `absent`.
+Every result carries a deterministic `guid` (RFC 4122 v5 of the finding's kind +
+identity) and a `partialFingerprints` entry (`driftAddress/v1`,
+`deprecation/v1`). Pass **`-baseline <previous run's tf-snag.sarif>`** and
+tf-snag diffs against it — matching on `guid` — and stamps each result:
+
+- `new` — not in the previous run
+- `unchanged` — matched, same message
+- `updated` — matched, message changed (an attribute diff moved, a deprecation
+  gained/lost a site, …)
+- `absent` — in the previous run, gone now (drift remediated, deprecation fixed);
+  re-emitted as its own result
+
+Without `-baseline`, `baselineState` is left unset and the Scans tab shows every
+row as `New`. The tab hides `Unchanged` by default, so a steady-state run looks
+near-empty once baselining is on.
 
 Drift results share one rule, `resource-drift`; the kind (`Deleted` / `Updated`
 / `Created`) leads the message. No glyph on it — the severity icon in column 0

@@ -419,7 +419,7 @@ func TestWriteSARIFResultShape(t *testing.T) {
 	})
 
 	var buf bytes.Buffer
-	if err := Build(p).WriteSARIF(&buf, nil); err != nil {
+	if err := Build(p).WriteSARIF(&buf, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	doc := parseSARIF(t, buf.Bytes())
@@ -497,7 +497,7 @@ func TestWriteSARIFUsesSourceLocation(t *testing.T) {
 		"azurerm_key_vault.vault": {File: "terraform/modules/kv/main.tf", Line: 12},
 	}
 	var buf bytes.Buffer
-	if err := Build(deletedVaultPlan()).WriteSARIF(&buf, src); err != nil {
+	if err := Build(deletedVaultPlan()).WriteSARIF(&buf, src, nil); err != nil {
 		t.Fatal(err)
 	}
 	res := parseSARIF(t, buf.Bytes()).Runs[0].Results[0]
@@ -512,7 +512,7 @@ func TestWriteSARIFUsesSourceLocation(t *testing.T) {
 
 func TestWriteSARIFCleanReportHasEmptyResults(t *testing.T) {
 	var buf bytes.Buffer
-	if err := Build(&plan.Plan{TerraformVersion: "1.9.6"}).WriteSARIF(&buf, nil); err != nil {
+	if err := Build(&plan.Plan{TerraformVersion: "1.9.6"}).WriteSARIF(&buf, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), `"results": []`) {
@@ -633,7 +633,7 @@ func TestWriteSARIFDeprecationResultShape(t *testing.T) {
 		}},
 	}
 	var buf bytes.Buffer
-	if err := rep.WriteSARIF(&buf, nil); err != nil {
+	if err := rep.WriteSARIF(&buf, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	run := parseSARIF(t, buf.Bytes()).Runs[0]
@@ -706,7 +706,7 @@ func TestWriteSARIFDeprecationMultiSite(t *testing.T) {
 		}},
 	}
 	var buf bytes.Buffer
-	if err := rep.WriteSARIF(&buf, nil); err != nil {
+	if err := rep.WriteSARIF(&buf, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	run := parseSARIF(t, buf.Bytes()).Runs[0]
@@ -743,7 +743,7 @@ func TestWriteSARIFDeprecationNoLocation(t *testing.T) {
 		Deprecations: []Deprecation{{Severity: "error", Summary: "Deprecated resource", Sites: []DeprecationSite{{Address: "azurerm_p.q"}}}},
 	}
 	var buf bytes.Buffer
-	if err := rep.WriteSARIF(&buf, nil); err != nil {
+	if err := rep.WriteSARIF(&buf, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	res := parseSARIF(t, buf.Bytes()).Runs[0].Results[0]
@@ -793,5 +793,103 @@ func TestWriteTextNoDriftButDeprecations(t *testing.T) {
 	if !strings.Contains(got, "no drift detected") || !strings.Contains(got, "deprecation warning(s): 1") ||
 		!strings.Contains(got, "azurerm_p.q") {
 		t.Errorf("unexpected text:\n%s", got)
+	}
+}
+
+// --- baseline -------------------------------------------------------------
+
+// baselineByID maps each SARIF result to its baselineState, keyed by the first
+// logicalLocation (a resource address) or the ruleId.
+func baselineByID(t *testing.T, b []byte) map[string]string {
+	t.Helper()
+	m := map[string]string{}
+	for _, res := range parseSARIF(t, b).Runs[0].Results {
+		id := res.RuleID
+		if len(res.LogicalLocations) > 0 {
+			id = res.LogicalLocations[0].FullyQualifiedName
+		}
+		m[id] = res.BaselineState
+	}
+	return m
+}
+
+func driftUpdate(addr string, before, after map[string]any) plan.ResourceChange {
+	return plan.ResourceChange{Address: addr, Change: plan.Change{
+		Actions: []string{"update"}, Before: before, After: after,
+	}}
+}
+
+func TestBaselineStamping(t *testing.T) {
+	depr := []Deprecation{{
+		Severity: "warning", Summary: "Argument is deprecated", Detail: "use bar",
+		Sites: []DeprecationSite{{Address: "azurerm_x.y", File: "main.tf", Line: 3}},
+	}}
+
+	// Run 1: two drifts + a deprecation.
+	r1 := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_storage_account.data", map[string]any{"tls": "1.2"}, map[string]any{"tls": "1.0"}),
+		driftUpdate("azurerm_dns_zone.gone", map[string]any{"ttl": 300}, map[string]any{"ttl": 600}),
+	}})
+	r1.Deprecations = depr
+	var prev bytes.Buffer
+	if err := r1.WriteSARIF(&prev, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	prior, err := ParsePriorSARIF(prev.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 2: storage drift value changed, dns_zone gone, a new key_vault drift,
+	// same deprecation.
+	r2 := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_storage_account.data", map[string]any{"tls": "1.2"}, map[string]any{"tls": "1.1"}),
+		driftUpdate("azurerm_key_vault.new", map[string]any{"sku": "standard"}, map[string]any{"sku": "premium"}),
+	}})
+	r2.Deprecations = depr
+	var cur bytes.Buffer
+	if err := r2.WriteSARIF(&cur, nil, prior); err != nil {
+		t.Fatal(err)
+	}
+
+	got := baselineByID(t, cur.Bytes())
+	want := map[string]string{
+		"azurerm_storage_account.data": "updated",   // matched, message changed
+		"azurerm_key_vault.new":        "new",       // not in prior
+		"azurerm_x.y":                  "unchanged", // deprecation, identical
+		"azurerm_dns_zone.gone":        "absent",    // in prior, gone now
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d results %v, want %d %v", len(got), got, len(want), want)
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("%s baselineState = %q, want %q", id, got[id], w)
+		}
+	}
+}
+
+func TestBaselineNilPriorLeavesStateUnset(t *testing.T) {
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	var buf bytes.Buffer
+	if err := r.WriteSARIF(&buf, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, res := range parseSARIF(t, buf.Bytes()).Runs[0].Results {
+		if res.BaselineState != "" {
+			t.Errorf("baselineState = %q, want unset", res.BaselineState)
+		}
+	}
+}
+
+func TestParsePriorSARIFRejectsGarbage(t *testing.T) {
+	if _, err := ParsePriorSARIF([]byte("not json")); err == nil {
+		t.Error("expected an error for non-JSON baseline input")
+	}
+	pr, err := ParsePriorSARIF([]byte(`{"version":"2.1.0","runs":[]}`))
+	if err != nil || pr == nil {
+		t.Fatalf("empty runs should parse cleanly: %v", err)
 	}
 }

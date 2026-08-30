@@ -583,12 +583,13 @@ var sarifRules = []sarifRule{
 // (may be nil) for drift locations; deprecation locations come from the plan
 // log itself. A clean report writes an empty results array.
 //
-// Every result carries a deterministic `guid` and a `partialFingerprints` entry
-// so a downstream `Sarif.Multitool match-results-forwarding` pass can match this
-// run against the previous one and stamp `baselineState` (new / unchanged /
-// updated / absent). tf-snag does not set `baselineState` itself, so on an
-// un-baselined run the Scans tab shows every row as "New".
-func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
+// Every result carries a deterministic `guid` (see resultGUID) and a
+// `partialFingerprints` entry. When prior is non-nil (from ParsePriorSARIF of
+// the previous run's tf-snag.sarif), each result is stamped with a
+// `baselineState` — `new` / `unchanged` / `updated` — by matching on guid, and
+// any prior result that has now gone is re-emitted as `absent`. When prior is
+// nil, no `baselineState` is set and the Scans tab shows every row as "New".
+func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc, prior *PriorResults) error {
 	run := sarifRun{
 		Tool: sarifTool{Driver: sarifDriver{
 			Name:           "tf-snag",
@@ -622,6 +623,7 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 		}
 		res.Locations = []sarifLocation{loc}
 
+		prior.stamp(&res)
 		run.Results = append(run.Results, res)
 	}
 
@@ -653,8 +655,11 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 			res.Locations = []sarifLocation{siteLocation(DeprecationSite{})}
 		}
 
+		prior.stamp(&res)
 		run.Results = append(run.Results, res)
 	}
+
+	run.Results = append(run.Results, prior.absent()...)
 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -707,6 +712,133 @@ func resultGUID(kind, identity string) string {
 	b[6] = b[6]&0x0f | 0x50 // version 5
 	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// --- baseline (new / unchanged / updated / absent) -----------------------
+
+// PriorResults is the previous run's SARIF results, indexed by identity, for
+// baseline comparison. The zero value / a nil *PriorResults means "no baseline"
+// — WriteSARIF then leaves baselineState unset.
+type PriorResults struct {
+	byKey map[string]*priorResult
+}
+
+type priorResult struct {
+	ruleID  string
+	level   string
+	message string
+	loc     []sarifLocation
+	logloc  []sarifLogicalLoc
+	fp      map[string]string
+	guid    string
+	matched bool
+}
+
+// ParsePriorSARIF reads a tf-snag SARIF log (a previous run's tf-snag.sarif) so
+// the next WriteSARIF can diff against it. Malformed JSON is an error; a log
+// with no runs/results yields an empty set (everything will read as "new").
+func ParsePriorSARIF(raw []byte) (*PriorResults, error) {
+	raw, err := plan.DecodeUTF(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parsing baseline SARIF: %w", err)
+	}
+	var log sarifLog
+	if err := json.Unmarshal(raw, &log); err != nil {
+		return nil, fmt.Errorf("parsing baseline SARIF: %w", err)
+	}
+	pr := &PriorResults{byKey: map[string]*priorResult{}}
+	for _, run := range log.Runs {
+		for _, res := range run.Results {
+			pr.byKey[resultKey(res)] = &priorResult{
+				ruleID:  res.RuleID,
+				level:   res.Level,
+				message: res.Message.Text,
+				loc:     res.Locations,
+				logloc:  res.LogicalLocations,
+				fp:      res.PartialFingerprints,
+				guid:    res.GUID,
+			}
+		}
+	}
+	return pr, nil
+}
+
+// resultKey is a result's cross-run identity: its guid, else a stable rendering
+// of its partialFingerprints, else ruleId + message text.
+func resultKey(res sarifResult) string {
+	if res.GUID != "" {
+		return "g:" + res.GUID
+	}
+	if len(res.PartialFingerprints) > 0 {
+		keys := make([]string, 0, len(res.PartialFingerprints))
+		for k := range res.PartialFingerprints {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var b strings.Builder
+		b.WriteString("f:")
+		for _, k := range keys {
+			fmt.Fprintf(&b, "%s=%s;", k, res.PartialFingerprints[k])
+		}
+		return b.String()
+	}
+	return "r:" + res.RuleID + "\x00" + res.Message.Text
+}
+
+// stamp sets res.BaselineState from the prior run: unmatched -> "new", matched
+// with the same message -> "unchanged", matched but changed -> "updated". A nil
+// receiver (no baseline) is a no-op.
+func (pr *PriorResults) stamp(res *sarifResult) {
+	if pr == nil {
+		return
+	}
+	p, ok := pr.byKey[resultKey(*res)]
+	if !ok {
+		res.BaselineState = "new"
+		return
+	}
+	p.matched = true
+	if p.message == res.Message.Text {
+		res.BaselineState = "unchanged"
+	} else {
+		res.BaselineState = "updated"
+	}
+}
+
+// absent returns one "absent" result per prior result that no current result
+// matched — a drift remediated or a deprecation removed since last run. Sorted
+// by rule then message for stable output. Nil receiver -> nil.
+func (pr *PriorResults) absent() []sarifResult {
+	if pr == nil {
+		return nil
+	}
+	var out []sarifResult
+	for _, p := range pr.byKey {
+		if p.matched {
+			continue
+		}
+		lvl := p.level
+		if lvl == "" {
+			lvl = "note"
+		}
+		out = append(out, sarifResult{
+			RuleID:              p.ruleID,
+			GUID:                p.guid,
+			Level:               lvl,
+			BaselineState:       "absent",
+			Message:             sarifText{Text: p.message},
+			Locations:           p.loc,
+			LogicalLocations:    p.logloc,
+			PartialFingerprints: p.fp,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RuleID != out[j].RuleID {
+			return out[i].RuleID < out[j].RuleID
+		}
+		return out[i].Message.Text < out[j].Message.Text
+	})
+	return out
 }
 
 func sarifProps(rr ResourceReport) map[string]string {

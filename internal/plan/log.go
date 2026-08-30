@@ -50,7 +50,7 @@ type logDiag struct {
 // and, on Windows, sometimes plain-text noise. Only an I/O failure or a failed
 // UTF transcode is returned as an error.
 func ParseLog(raw []byte) ([]Diagnostic, error) {
-	raw, err := decodeUTF(raw)
+	raw, err := DecodeUTF(raw)
 	if err != nil {
 		return nil, fmt.Errorf("parsing plan log: %w", err)
 	}
