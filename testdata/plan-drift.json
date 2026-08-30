@@ -1,0 +1,91 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.6",
+  "resource_drift": [
+    {
+      "address": "azurerm_storage_account.data",
+      "module_address": "",
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "data",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "name": "stdatatbc01",
+          "min_tls_version": "TLS1_2",
+          "allow_nested_items_to_be_public": false,
+          "tags": { "owner": "platform", "env": "prod" }
+        },
+        "after": {
+          "name": "stdatatbc01",
+          "min_tls_version": "TLS1_0",
+          "allow_nested_items_to_be_public": true,
+          "tags": { "owner": "platform", "env": "prod", "temp": "true" }
+        }
+      }
+    }
+  ],
+  "resource_changes": [
+    {
+      "address": "azurerm_storage_account.data",
+      "module_address": "",
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "data",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["update"],
+        "before": {
+          "min_tls_version": "TLS1_0",
+          "allow_nested_items_to_be_public": true,
+          "tags": { "owner": "platform", "env": "prod", "temp": "true" }
+        },
+        "after": {
+          "min_tls_version": "TLS1_2",
+          "allow_nested_items_to_be_public": false,
+          "tags": { "owner": "platform", "env": "prod" }
+        }
+      }
+    },
+    {
+      "address": "azurerm_resource_group.new",
+      "module_address": "",
+      "mode": "managed",
+      "type": "azurerm_resource_group",
+      "name": "new",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["create"],
+        "before": null,
+        "after": { "name": "rg-tbc-new", "location": "uksouth" }
+      }
+    },
+    {
+      "address": "module.network.azurerm_subnet.legacy",
+      "module_address": "module.network",
+      "mode": "managed",
+      "type": "azurerm_subnet",
+      "name": "legacy",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["delete"],
+        "before": { "name": "snet-legacy" },
+        "after": null
+      }
+    },
+    {
+      "address": "azurerm_subnet.app",
+      "module_address": "",
+      "mode": "managed",
+      "type": "azurerm_subnet",
+      "name": "app",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["no-op"],
+        "before": { "name": "snet-app" },
+        "after": { "name": "snet-app" }
+      }
+    }
+  ]
+}

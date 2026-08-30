@@ -1,0 +1,8 @@
+# build output
+/tf-snag
+/tf-snag.exe
+/dist/
+
+# terraform plan artifacts
+*.tfplan
+plan.json

@@ -1,0 +1,60 @@
+# Build, test, and release the tf-snag CLI.
+#
+#   tf-snag       linux/amd64    (for CI agents)
+#   tf-snag.exe   windows/amd64  (for local use)
+#
+# Pull requests run vet + test only. Pushes to main run vet + test and then
+# publish a GitHub Release "v0.1.<run_number>" with both binaries attached. The
+# drift pipeline in tf-drift-test-resources downloads the linux binary from the
+# latest release.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go vet ./...
+      - run: go test ./...
+
+  release:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - name: Build linux + windows binaries
+        run: |
+          set -eux -o pipefail
+          VER="0.1.${{ github.run_number }}"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          mkdir -p dist
+          # Stamp the version so `tf-snag -version` reports it.
+          ldflags="-s -w -X main.version=$VER"
+          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/tf-snag .
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/tf-snag.exe .
+          ./dist/tf-snag -version
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VER" dist/tf-snag dist/tf-snag.exe \
+            --title "v$VER" \
+            --notes "tf-snag $VER (linux/amd64 + windows/amd64)"

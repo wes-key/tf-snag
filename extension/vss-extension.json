@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "id": "tf-snag-tab",
+  "publisher": "wes-key",
+  "version": "0.1.0",
+  "name": "tf-snag drift report",
+  "description": "Adds a \"Drift\" tab to the pipeline run showing resources Terraform found changed outside of it, as reported by the tf-snag CLI.",
+  "public": false,
+  "categories": ["Azure Pipelines"],
+  "tags": ["terraform", "drift", "infrastructure", "iac"],
+  "targets": [
+    { "id": "Microsoft.VisualStudio.Services" }
+  ],
+  "icons": {
+    "default": "images/logo.png"
+  },
+  "content": {
+    "details": { "path": "README.md" }
+  },
+  "scopes": ["vso.build"],
+  "files": [
+    { "path": "tab", "addressable": true },
+    { "path": "images", "addressable": true },
+    { "path": "node_modules/vss-web-extension-sdk/lib", "addressable": true, "packagePath": "lib" }
+  ],
+  "contributions": [
+    {
+      "id": "tf-snag-build-results-tab",
+      "type": "ms.vss-build-web.build-results-tab",
+      "targets": ["ms.vss-build-web.build-results-view"],
+      "properties": {
+        "name": "Drift",
+        "uri": "tab/drift.html"
+      }
+    }
+  ]
+}
