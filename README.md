@@ -120,9 +120,10 @@ over.
 
 Each baselined result also gets `provenance.firstDetectionTimeUtc` — forwarded
 from the matched prior result, or "now" for a new one — and, since that tab has
-no Age column, a `first seen <date> (<n> days ago)` line is appended to its
-message. The date is only accurate from the second baselined run on (the first
-has no prior timestamp to carry).
+no Age column, the first line of the message ends with a
+`(first seen <date>, <n> days ago)` note, e.g. `Argument is deprecated (first
+seen 2026-08-10, 20 days ago)`. The date is only accurate from the second
+baselined run on (the first has no prior timestamp to carry).
 
 Without `-baseline`, `baselineState` and `provenance` are left unset and the
 Scans tab shows every row as `New`.

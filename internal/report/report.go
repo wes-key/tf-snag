@@ -766,7 +766,7 @@ func ParsePriorSARIF(raw []byte) (*PriorResults, error) {
 			pr.byKey[resultKey(res)] = &priorResult{
 				ruleID:    res.RuleID,
 				level:     res.Level,
-				message:   stripAgeSuffix(res.Message.Text),
+				message:   stripAge(res.Message.Text),
 				loc:       res.Locations,
 				logloc:    res.LogicalLocations,
 				fp:        res.PartialFingerprints,
@@ -797,7 +797,7 @@ func resultKey(res sarifResult) string {
 		}
 		return b.String()
 	}
-	return "r:" + res.RuleID + "\x00" + stripAgeSuffix(res.Message.Text)
+	return "r:" + res.RuleID + "\x00" + stripAge(res.Message.Text)
 }
 
 // stamp sets res.BaselineState from the prior run: unmatched -> "new", anything
@@ -815,7 +815,7 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 		now := nowUTC()
 		res.BaselineState = "new"
 		res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: now}
-		res.Message.Text += ageSuffix(now)
+		res.Message.Text = withAge(res.Message.Text, now)
 		return
 	}
 	p.matched = true
@@ -825,17 +825,17 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 		seen = nowUTC() // prior run predates provenance tracking
 	}
 	res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: seen}
-	res.Message.Text += ageSuffix(seen)
+	res.Message.Text = withAge(res.Message.Text, seen)
 }
 
 // nowUTC is the current time as a SARIF timestamp; a var so tests can pin it.
 var nowUTC = func() string { return time.Now().UTC().Format(time.RFC3339) }
 
-// ageSuffix is the "\nfirst seen <date> (<n> days ago)" line appended to a
-// baselined result's message — the Azure DevOps Scans tab has no Age column, so
-// this is the only place the first-detection time is visible there. Returns ""
-// if firstSeenUTC is unparseable.
-func ageSuffix(firstSeenUTC string) string {
+// ageParens is the " (first seen <date>, <n> days ago)" note tacked onto the
+// end of a baselined result message's first line — the Azure DevOps Scans tab
+// has no Age column, so this is the only place the first-detection time shows
+// there. Returns "" if firstSeenUTC is unparseable.
+func ageParens(firstSeenUTC string) string {
 	t, err := time.Parse(time.RFC3339, firstSeenUTC)
 	if err != nil {
 		return ""
@@ -843,21 +843,40 @@ func ageSuffix(firstSeenUTC string) string {
 	days := int(time.Now().UTC().Sub(t).Hours() / 24)
 	switch {
 	case days <= 0:
-		return "\nfirst seen today"
+		return " (first seen today)"
 	case days == 1:
-		return "\nfirst seen " + t.Format("2006-01-02") + " (1 day ago)"
+		return " (first seen " + t.Format("2006-01-02") + ", 1 day ago)"
 	default:
-		return fmt.Sprintf("\nfirst seen %s (%d days ago)", t.Format("2006-01-02"), days)
+		return fmt.Sprintf(" (first seen %s, %d days ago)", t.Format("2006-01-02"), days)
 	}
 }
 
-// stripAgeSuffix removes a trailing ageSuffix line so a previous run's message
-// (which may already carry one) round-trips cleanly.
-func stripAgeSuffix(msg string) string {
-	if i := strings.LastIndex(msg, "\nfirst seen "); i >= 0 {
-		return msg[:i]
+// withAge inserts ageParens at the end of msg's first line.
+func withAge(msg, firstSeenUTC string) string {
+	p := ageParens(firstSeenUTC)
+	if p == "" {
+		return msg
 	}
-	return msg
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		return msg[:i] + p + msg[i:]
+	}
+	return msg + p
+}
+
+// stripAge removes any " (first seen ...)" note so a previous run's message
+// round-trips cleanly.
+func stripAge(msg string) string {
+	for {
+		i := strings.Index(msg, " (first seen ")
+		if i < 0 {
+			return msg
+		}
+		j := strings.IndexByte(msg[i:], ')')
+		if j < 0 {
+			return msg
+		}
+		msg = msg[:i] + msg[i+j+1:]
+	}
 }
 
 // absent returns one "absent" result per prior result that no current result
@@ -888,7 +907,7 @@ func (pr *PriorResults) absent() []sarifResult {
 		}
 		if p.firstSeen != "" {
 			res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: p.firstSeen}
-			res.Message.Text += ageSuffix(p.firstSeen)
+			res.Message.Text = withAge(res.Message.Text, p.firstSeen)
 		}
 		out = append(out, res)
 	}
