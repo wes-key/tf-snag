@@ -4,6 +4,7 @@
 package report
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -515,7 +516,11 @@ type sarifText struct {
 }
 
 type sarifResult struct {
-	RuleID              string            `json:"ruleId"`
+	RuleID string `json:"ruleId"`
+	// GUID is a deterministic per-finding id (see resultGUID). Sarif.Multitool
+	// keys off it when diffing a run against the previous one to fill in
+	// BaselineState; tf-snag itself leaves BaselineState unset.
+	GUID                string            `json:"guid,omitempty"`
 	Level               string            `json:"level"`
 	BaselineState       string            `json:"baselineState,omitempty"`
 	Message             sarifText         `json:"message"`
@@ -577,6 +582,12 @@ var sarifRules = []sarifRule{
 // per notice in r.Deprecations. src maps "<type>.<name>" to the .tf declaration
 // (may be nil) for drift locations; deprecation locations come from the plan
 // log itself. A clean report writes an empty results array.
+//
+// Every result carries a deterministic `guid` and a `partialFingerprints` entry
+// so a downstream `Sarif.Multitool match-results-forwarding` pass can match this
+// run against the previous one and stamp `baselineState` (new / unchanged /
+// updated / absent). tf-snag does not set `baselineState` itself, so on an
+// un-baselined run the Scans tab shows every row as "New".
 func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 	run := sarifRun{
 		Tool: sarifTool{Driver: sarifDriver{
@@ -589,16 +600,16 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 
 	for _, rr := range r.Drift {
 		res := sarifResult{
-			RuleID:        "resource-drift",
-			Level:         sarifLevel(rr.Action),
-			BaselineState: sarifBaseline(rr.Action),
-			Message:       sarifText{Text: rr.sarifMessage()},
+			RuleID:  "resource-drift",
+			GUID:    resultGUID("resource-drift", rr.Address),
+			Level:   sarifLevel(rr.Action),
+			Message: sarifText{Text: rr.sarifMessage()},
 			LogicalLocations: []sarifLogicalLoc{{
 				FullyQualifiedName: rr.Address,
 				Name:               resourceName(rr.Address),
 				Kind:               "resource",
 			}},
-			PartialFingerprints: map[string]string{"driftAddress": rr.Address},
+			PartialFingerprints: map[string]string{"driftAddress/v1": rr.Address},
 			Properties:          sarifProps(rr),
 		}
 
@@ -617,9 +628,10 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 	for _, d := range r.Deprecations {
 		res := sarifResult{
 			RuleID:              "deprecation",
+			GUID:                resultGUID("deprecation", d.key()),
 			Level:               sarifSeverityLevel(d.Severity),
 			Message:             sarifText{Text: deprecationMessage(d)},
-			PartialFingerprints: map[string]string{"deprecation": d.key()},
+			PartialFingerprints: map[string]string{"deprecation/v1": d.key()},
 			Properties:          deprecationProps(d),
 		}
 		for i, s := range d.Sites {
@@ -676,18 +688,25 @@ func sarifLevel(action string) string {
 	}
 }
 
-// sarifBaseline reuses SARIF's baselineState vocabulary to describe the drift:
-// a resource gone from the real world is "absent", a new one "new", an edited
-// one "updated". Without it the Scans tab shows every row as "new".
-func sarifBaseline(action string) string {
-	switch action {
-	case "delete":
-		return "absent"
-	case "create":
-		return "new"
-	default:
-		return "updated"
-	}
+// sarifNS is a fixed namespace UUID for deriving result GUIDs (RFC 4122 v5).
+// Any constant UUID works; it must never change or every finding's guid moves.
+var sarifNS = [16]byte{
+	0x7d, 0x3a, 0x2c, 0x91, 0x4b, 0x8e, 0x4f, 0x1a,
+	0x9c, 0x6d, 0x2e, 0x5f, 0x0a, 0x1b, 0x3c, 0x4d,
+}
+
+// resultGUID derives a deterministic RFC 4122 v5 UUID from the finding's kind
+// and stable identity, so the same finding gets the same guid on every run.
+// Sarif.Multitool uses it as the primary key when matching results between a
+// run and its predecessor to compute baselineState.
+func resultGUID(kind, identity string) string {
+	h := sha1.New()
+	h.Write(sarifNS[:])
+	h.Write([]byte(kind + "\x00" + identity))
+	b := h.Sum(nil)[:16]
+	b[6] = b[6]&0x0f | 0x50 // version 5
+	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 func sarifProps(rr ResourceReport) map[string]string {

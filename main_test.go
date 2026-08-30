@@ -76,10 +76,14 @@ func TestRunSARIFFormat(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	for _, want := range []string{`"version": "2.1.0"`, `"ruleId": "resource-drift"`, `"name": "tf-snag"`, `"baselineState"`} {
+	for _, want := range []string{`"version": "2.1.0"`, `"ruleId": "resource-drift"`, `"name": "tf-snag"`, `"guid"`, `"driftAddress/v1"`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("sarif output missing %q\n---\n%s", want, out.String())
 		}
+	}
+	// tf-snag leaves baselineState for the downstream Multitool pass.
+	if strings.Contains(out.String(), `"baselineState"`) {
+		t.Errorf("baselineState should not be emitted by tf-snag\n%s", out.String())
 	}
 }
 

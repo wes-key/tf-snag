@@ -378,6 +378,7 @@ type sarifDoc struct {
 		} `json:"tool"`
 		Results []struct {
 			RuleID        string `json:"ruleId"`
+			GUID          string `json:"guid"`
 			Level         string `json:"level"`
 			BaselineState string `json:"baselineState"`
 			Message       struct {
@@ -446,10 +447,17 @@ func TestWriteSARIFResultShape(t *testing.T) {
 		if res.Message.Markdown != "" {
 			t.Errorf("message.markdown should be absent, got %q", res.Message.Markdown)
 		}
+		// tf-snag never sets baselineState — Sarif.Multitool fills it in later.
+		if res.BaselineState != "" {
+			t.Errorf("baselineState should be unset, got %q", res.BaselineState)
+		}
+		if len(res.GUID) != 36 {
+			t.Errorf("guid = %q, want a UUID", res.GUID)
+		}
 		switch {
 		case strings.HasPrefix(res.Message.Text, "Deleted"):
-			if res.Level != "error" || res.BaselineState != "absent" {
-				t.Errorf("deleted: level=%q baseline=%q", res.Level, res.BaselineState)
+			if res.Level != "error" {
+				t.Errorf("deleted: level=%q", res.Level)
 			}
 			if strings.Contains(res.Message.Text, "\n") {
 				t.Errorf("delete message must stay single line, got %q", res.Message.Text)
@@ -465,8 +473,8 @@ func TestWriteSARIFResultShape(t *testing.T) {
 				t.Errorf("fallback location should have no region")
 			}
 		case strings.HasPrefix(res.Message.Text, "Updated"):
-			if res.Level != "warning" || res.BaselineState != "updated" {
-				t.Errorf("updated: level=%q baseline=%q", res.Level, res.BaselineState)
+			if res.Level != "warning" {
+				t.Errorf("updated: level=%q", res.Level)
 			}
 			// Two changed attributes -> one line each under the verb.
 			if res.Message.Text != "Updated\ntags.Owner: null → \"Wes\"\ntags.Test: null → \"Test\"" {
@@ -656,11 +664,30 @@ func TestWriteSARIFDeprecationResultShape(t *testing.T) {
 	if len(res.LogicalLocations) != 1 || res.LogicalLocations[0].FullyQualifiedName != "module.a.azurerm_x.y" {
 		t.Errorf("logicalLocations = %+v", res.LogicalLocations)
 	}
-	if res.PartialFingerprints["deprecation"] == "" {
+	if res.PartialFingerprints["deprecation/v1"] == "" {
 		t.Errorf("partialFingerprints = %+v", res.PartialFingerprints)
+	}
+	if len(res.GUID) != 36 || res.BaselineState != "" {
+		t.Errorf("guid=%q baselineState=%q", res.GUID, res.BaselineState)
 	}
 	if res.Properties["severity"] != "warning" || res.Properties["address"] != "module.a.azurerm_x.y" {
 		t.Errorf("properties = %+v", res.Properties)
+	}
+}
+
+func TestResultGUIDIsStableAndDistinct(t *testing.T) {
+	a1 := resultGUID("resource-drift", "azurerm_x.y")
+	a2 := resultGUID("resource-drift", "azurerm_x.y")
+	b := resultGUID("resource-drift", "azurerm_x.z")
+	c := resultGUID("deprecation", "azurerm_x.y")
+	if a1 != a2 {
+		t.Errorf("not deterministic: %q vs %q", a1, a2)
+	}
+	if len(a1) != 36 || a1[14] != '5' || (a1[19] != '8' && a1[19] != '9' && a1[19] != 'a' && a1[19] != 'b') {
+		t.Errorf("not a v5 UUID: %q", a1)
+	}
+	if a1 == b || a1 == c {
+		t.Errorf("collisions: drift.y=%q drift.z=%q depr.y=%q", a1, b, c)
 	}
 }
 

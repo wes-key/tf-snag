@@ -99,7 +99,15 @@ The `sarif` output is one flat result per drifted resource:
 | severity icon | `level` | ⛔ delete/create · ⚠ update |
 | Result | `message` | `Deleted — name=kv01` · `Updated — tags.Owner: null → "Wes"` |
 | Path (link) | `physicalLocation` (needs `-source`) | `terraform/modules/kv/main.tf` |
-| Baseline | `baselineState` | `absent` · `updated` · `new` |
+| Baseline | `baselineState` | always `New` from tf-snag — see below |
+
+Every result also carries a deterministic `guid` (RFC 4122 v5 of the finding's
+kind + identity) and a `partialFingerprints` entry (`driftAddress/v1`,
+`deprecation/v1`). tf-snag does **not** set `baselineState` — so every row shows
+`New` in the Scans tab until a pipeline step runs
+`Sarif.Multitool match-results-forwarding` against the previous run's
+`tf-snag.sarif`, matching on `guid` / `partialFingerprints` and stamping
+`new` / `unchanged` / `updated` / `absent`.
 
 Drift results share one rule, `resource-drift`; the kind (`Deleted` / `Updated`
 / `Created`) leads the message. No glyph on it — the severity icon in column 0
