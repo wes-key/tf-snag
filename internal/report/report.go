@@ -745,17 +745,18 @@ func siteLabel(s DeprecationSite) string {
 }
 
 // deprecationMessage is the Scans-grid message: summary on line 1, detail
-// (newlines flattened, clipped) on line 2, then — when more than one resource
-// trips it — one "address (file:line)" line per site. The Scans tab renders
-// message.text with white-space:pre-line, so the breaks show.
+// (newlines flattened, clipped) on line 2, then one "address (file:line)" line
+// per site — always, so a lone deprecation shows where it is just like a
+// multi-site one does. The Scans tab renders message.text with
+// white-space:pre-line, so the breaks show.
 func deprecationMessage(d Deprecation) string {
 	b := d.Summary
 	if d.Detail != "" {
 		b += "\n" + clip(strings.ReplaceAll(d.Detail, "\n", " "), 400)
 	}
-	if len(d.Sites) > 1 {
-		for _, s := range d.Sites {
-			b += "\n" + siteLabel(s)
+	for _, s := range d.Sites {
+		if lbl := siteLabel(s); lbl != "" {
+			b += "\n" + lbl
 		}
 	}
 	return b

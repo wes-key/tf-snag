@@ -53,17 +53,20 @@ go install github.com/wes-key/tf-snag@latest
 terraform show -json PLANFILE | tf-snag [flags]
 tf-snag -plan plan.json [flags]
 
-  -plan string       path to `terraform show -json` output (default: stdin)
-  -plan-log string   path to `terraform plan -json` NDJSON log (required by
-                     -check deprecations)
-  -check list        analyses to run: drift, deprecations, or a comma list
-                     (also: all) (default "drift")
-  -format string     text | json | markdown | junit | sarif (default "text")
-  -color string      colorize text output: auto | always | never (default "auto")
-  -source dir        Terraform source dir; sarif locations link to the .tf
-                     declaring each resource (best effort, first match wins)
-  -exit-code         exit 2 when drift or a deprecation is detected (default true)
-  -version           print version and exit
+  -plan string        path to `terraform show -json` output (default: stdin)
+  -plan-log string    path to `terraform plan -json` NDJSON log (required by
+                      -check deprecations)
+  -plan-log-dir dir   directory `terraform plan` ran in, relative to the repo
+                      root; prepended to deprecation file locations so their
+                      links resolve
+  -check list         analyses to run: drift, deprecations, or a comma list
+                      (also: all) (default "drift")
+  -format string      text | json | markdown | junit | sarif (default "text")
+  -color string       colorize text output: auto | always | never (default "auto")
+  -source dir         Terraform source dir; sarif locations link to the .tf
+                      declaring each resource (best effort, first match wins)
+  -exit-code          exit 2 when drift or a deprecation is detected (default true)
+  -version            print version and exit
 ```
 
 `-check deprecations` reads the newline-delimited JSON that `terraform plan
@@ -113,13 +116,17 @@ With `-check deprecations` the log carries a second rule, `deprecation`, one
 result per distinct notice (keyed on summary + detail). The Scans tab
 de-duplicates nothing, so tf-snag collapses here: every source location that
 trips the same deprecation becomes one row — summary on message line 1, detail
-on line 2, then one `address (file:line)` line per location; the first location
-is the result's `location` (no `-source` needed — it comes from the diagnostic's
-`range`) and the rest are `relatedLocations`. The two rules render as two
-collapsible groups; the Scans tab orders groups by result count (or
-alphabetically if the viewer re-sorts), so their vertical order is not something
-the file controls. The deprecation filter is a substring match on "deprecat" in
-the summary/detail — provider notices worded differently are missed for now.
+on line 2, then one `address (file:line)` line per location (always, even for a
+single site). The first location is the result's `location`, the rest are
+`relatedLocations`. Locations come from the diagnostic's `range`, which
+`terraform plan -json` reports relative to the dir it ran in — pass
+`-plan-log-dir` (e.g. `terraform` when the plan used `-chdir=terraform`) so the
+paths are repo-root-relative and the Scans-tab links resolve. The two rules
+render as two collapsible groups; the Scans tab orders groups by result count
+(or alphabetically if the viewer re-sorts), so their vertical order is not
+something the file controls. The deprecation filter is a substring match on
+"deprecat" in the summary/detail — provider notices worded differently are
+missed for now.
 
 Exit codes: `0` clean, `2` drift or a deprecation detected, `2` on any error.
 
@@ -137,15 +144,17 @@ alongside the plan file to feed the deprecation check:
 
 ```yaml
 - script: |
-    terraform plan -out tfplan -json | tee plan.jsonl
-    terraform show -json tfplan > plan.json
+    terraform -chdir=terraform plan -out tfplan -json | tee plan.jsonl
+    terraform -chdir=terraform show -json tfplan > plan.json
     ./tf-snag -plan plan.json -format json     -exit-code=false > tf-snag.json
     ./tf-snag -plan plan.json -format markdown  -exit-code=false > tf-snag.md
-    ./tf-snag -check all -plan plan.json -plan-log plan.jsonl \
+    # -plan-log-dir terraform: plan ran with -chdir=terraform, so its diagnostic
+    # paths are relative to terraform/ — prepend it for working Scans links.
+    ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
       -format sarif -source "$(Build.SourcesDirectory)" -exit-code=false > tf-snag.sarif
     echo "##vso[task.addattachment type=tf-snag.report;name=tf-snag;]$PWD/tf-snag.json"
     echo "##vso[task.uploadsummary]$PWD/tf-snag.md"
-    ./tf-snag -check all -plan plan.json -plan-log plan.jsonl   # console + exit 2
+    ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform  # console + exit 2
   displayName: Detect drift
 - task: PublishBuildArtifacts@1
   condition: succeededOrFailed()

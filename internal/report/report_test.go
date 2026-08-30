@@ -639,9 +639,11 @@ func TestWriteSARIFDeprecationResultShape(t *testing.T) {
 	if res.Message.Markdown != "" {
 		t.Errorf("message.markdown should be absent, got %q", res.Message.Markdown)
 	}
-	// One site -> summary + flattened detail, no per-site lines.
+	// summary / flattened detail / the one site (shown even for a lone deprecation).
 	lines := strings.Split(res.Message.Text, "\n")
-	if len(lines) != 2 || lines[0] != "Argument is deprecated" || !strings.Contains(lines[1], "Use \"bar\" instead.") {
+	if len(lines) != 3 || lines[0] != "Argument is deprecated" ||
+		!strings.Contains(lines[1], "Use \"bar\" instead.") ||
+		lines[2] != "module.a.azurerm_x.y (modules/a/main.tf:12)" {
 		t.Errorf("message = %q", res.Message.Text)
 	}
 	loc := res.Locations[0].PhysicalLocation
