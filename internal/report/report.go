@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wes-key/tf-snag/internal/plan"
 )
@@ -517,9 +518,8 @@ type sarifText struct {
 
 type sarifResult struct {
 	RuleID string `json:"ruleId"`
-	// GUID is a deterministic per-finding id (see resultGUID). Sarif.Multitool
-	// keys off it when diffing a run against the previous one to fill in
-	// BaselineState; tf-snag itself leaves BaselineState unset.
+	// GUID is a deterministic per-finding id (see resultGUID) used to match a
+	// result against the previous run when -baseline is given.
 	GUID                string            `json:"guid,omitempty"`
 	Level               string            `json:"level"`
 	BaselineState       string            `json:"baselineState,omitempty"`
@@ -528,7 +528,15 @@ type sarifResult struct {
 	RelatedLocations    []sarifLocation   `json:"relatedLocations,omitempty"`
 	LogicalLocations    []sarifLogicalLoc `json:"logicalLocations,omitempty"`
 	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
-	Properties          map[string]string `json:"properties,omitempty"`
+	// Provenance.firstDetectionTimeUtc — set only under -baseline: the time the
+	// finding was first seen, forwarded from the previous run. The Scans tab
+	// renders it as a "First Observed" date and an "Age" column.
+	Provenance *sarifProvenance  `json:"provenance,omitempty"`
+	Properties map[string]string `json:"properties,omitempty"`
+}
+
+type sarifProvenance struct {
+	FirstDetectionTimeUtc string `json:"firstDetectionTimeUtc,omitempty"`
 }
 
 type sarifLocation struct {
@@ -724,14 +732,15 @@ type PriorResults struct {
 }
 
 type priorResult struct {
-	ruleID  string
-	level   string
-	message string
-	loc     []sarifLocation
-	logloc  []sarifLogicalLoc
-	fp      map[string]string
-	guid    string
-	matched bool
+	ruleID    string
+	level     string
+	message   string
+	loc       []sarifLocation
+	logloc    []sarifLogicalLoc
+	fp        map[string]string
+	guid      string
+	firstSeen string // provenance.firstDetectionTimeUtc, "" if the prior run had none
+	matched   bool
 }
 
 // ParsePriorSARIF reads a tf-snag SARIF log (a previous run's tf-snag.sarif) so
@@ -749,14 +758,19 @@ func ParsePriorSARIF(raw []byte) (*PriorResults, error) {
 	pr := &PriorResults{byKey: map[string]*priorResult{}}
 	for _, run := range log.Runs {
 		for _, res := range run.Results {
+			var firstSeen string
+			if res.Provenance != nil {
+				firstSeen = res.Provenance.FirstDetectionTimeUtc
+			}
 			pr.byKey[resultKey(res)] = &priorResult{
-				ruleID:  res.RuleID,
-				level:   res.Level,
-				message: res.Message.Text,
-				loc:     res.Locations,
-				logloc:  res.LogicalLocations,
-				fp:      res.PartialFingerprints,
-				guid:    res.GUID,
+				ruleID:    res.RuleID,
+				level:     res.Level,
+				message:   res.Message.Text,
+				loc:       res.Locations,
+				logloc:    res.LogicalLocations,
+				fp:        res.PartialFingerprints,
+				guid:      res.GUID,
+				firstSeen: firstSeen,
 			}
 		}
 	}
@@ -786,8 +800,9 @@ func resultKey(res sarifResult) string {
 }
 
 // stamp sets res.BaselineState from the prior run: unmatched -> "new", matched
-// with the same message -> "unchanged", matched but changed -> "updated". A nil
-// receiver (no baseline) is a no-op.
+// with the same message -> "unchanged", matched but changed -> "updated". It
+// also sets provenance.firstDetectionTimeUtc — forwarded from the prior result,
+// or now for a new one. A nil receiver (no baseline) is a no-op.
 func (pr *PriorResults) stamp(res *sarifResult) {
 	if pr == nil {
 		return
@@ -795,6 +810,7 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 	p, ok := pr.byKey[resultKey(*res)]
 	if !ok {
 		res.BaselineState = "new"
+		res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: nowUTC()}
 		return
 	}
 	p.matched = true
@@ -803,7 +819,15 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 	} else {
 		res.BaselineState = "updated"
 	}
+	seen := p.firstSeen
+	if seen == "" {
+		seen = nowUTC() // prior run predates provenance tracking
+	}
+	res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: seen}
 }
+
+// nowUTC is the current time as a SARIF timestamp; a var so tests can pin it.
+var nowUTC = func() string { return time.Now().UTC().Format(time.RFC3339) }
 
 // absent returns one "absent" result per prior result that no current result
 // matched — a drift remediated or a deprecation removed since last run. Sorted
@@ -821,7 +845,7 @@ func (pr *PriorResults) absent() []sarifResult {
 		if lvl == "" {
 			lvl = "note"
 		}
-		out = append(out, sarifResult{
+		res := sarifResult{
 			RuleID:              p.ruleID,
 			GUID:                p.guid,
 			Level:               lvl,
@@ -830,7 +854,11 @@ func (pr *PriorResults) absent() []sarifResult {
 			Locations:           p.loc,
 			LogicalLocations:    p.logloc,
 			PartialFingerprints: p.fp,
-		})
+		}
+		if p.firstSeen != "" {
+			res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: p.firstSeen}
+		}
+		out = append(out, res)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].RuleID != out[j].RuleID {

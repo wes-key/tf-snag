@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wes-key/tf-snag/internal/plan"
 )
@@ -391,7 +392,10 @@ type sarifDoc struct {
 				FullyQualifiedName string `json:"fullyQualifiedName"`
 			} `json:"logicalLocations"`
 			PartialFingerprints map[string]string `json:"partialFingerprints"`
-			Properties          map[string]string `json:"properties"`
+			Provenance          *struct {
+				FirstDetectionTimeUtc string `json:"firstDetectionTimeUtc"`
+			} `json:"provenance"`
+			Properties map[string]string `json:"properties"`
 		} `json:"results"`
 	} `json:"runs"`
 }
@@ -878,9 +882,55 @@ func TestBaselineNilPriorLeavesStateUnset(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, res := range parseSARIF(t, buf.Bytes()).Runs[0].Results {
-		if res.BaselineState != "" {
-			t.Errorf("baselineState = %q, want unset", res.BaselineState)
+		if res.BaselineState != "" || res.Provenance != nil {
+			t.Errorf("no-baseline result carries state %q / provenance %+v", res.BaselineState, res.Provenance)
 		}
+	}
+}
+
+func TestBaselineForwardsFirstDetection(t *testing.T) {
+	prev := `{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"tf-snag","rules":[]}},"results":[{` +
+		`"ruleId":"resource-drift","guid":"` + resultGUID("resource-drift", "azurerm_x.y") + `",` +
+		`"level":"warning","message":{"text":"Updated — a: 1 → 2"},` +
+		`"provenance":{"firstDetectionTimeUtc":"2026-01-02T03:04:05Z"}}]}]}`
+	prior, err := ParsePriorSARIF([]byte(prev))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	var buf bytes.Buffer
+	if err := r.WriteSARIF(&buf, nil, prior); err != nil {
+		t.Fatal(err)
+	}
+	res := parseSARIF(t, buf.Bytes()).Runs[0].Results[0]
+	if res.BaselineState != "unchanged" {
+		t.Errorf("baselineState = %q, want unchanged", res.BaselineState)
+	}
+	if res.Provenance == nil || res.Provenance.FirstDetectionTimeUtc != "2026-01-02T03:04:05Z" {
+		t.Errorf("firstDetectionTimeUtc = %+v, want forwarded 2026-01-02T03:04:05Z", res.Provenance)
+	}
+}
+
+func TestBaselineNewGetsFirstDetectionNow(t *testing.T) {
+	prior, err := ParsePriorSARIF([]byte(`{"version":"2.1.0","runs":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	var buf bytes.Buffer
+	if err := r.WriteSARIF(&buf, nil, prior); err != nil {
+		t.Fatal(err)
+	}
+	res := parseSARIF(t, buf.Bytes()).Runs[0].Results[0]
+	if res.BaselineState != "new" || res.Provenance == nil {
+		t.Fatalf("want new + provenance, got %q %+v", res.BaselineState, res.Provenance)
+	}
+	if _, err := time.Parse(time.RFC3339, res.Provenance.FirstDetectionTimeUtc); err != nil {
+		t.Errorf("firstDetectionTimeUtc %q not RFC3339: %v", res.Provenance.FirstDetectionTimeUtc, err)
 	}
 }
 

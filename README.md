@@ -115,9 +115,15 @@ tf-snag diffs against it — matching on `guid` — and stamps each result:
 - `absent` — in the previous run, gone now (drift remediated, deprecation fixed);
   re-emitted as its own result
 
-Without `-baseline`, `baselineState` is left unset and the Scans tab shows every
-row as `New`. The tab hides `Unchanged` by default, so a steady-state run looks
-near-empty once baselining is on.
+It also sets `provenance.firstDetectionTimeUtc` — forwarded from the matched
+prior result, or "now" for a new one — which the Scans tab renders as a **First
+Observed** date and an **Age** column, so you can see when a drift or deprecation
+first surfaced. The date only becomes accurate from the second baselined run on
+(the first has no prior timestamp to carry).
+
+Without `-baseline`, `baselineState` and `provenance` are left unset and the
+Scans tab shows every row as `New`. The tab hides `Unchanged` by default, so a
+steady-state run looks near-empty once baselining is on.
 
 Drift results share one rule, `resource-drift`; the kind (`Deleted` / `Updated`
 / `Created`) leads the message. No glyph on it — the severity icon in column 0
