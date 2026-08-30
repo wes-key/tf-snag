@@ -174,6 +174,8 @@ tests. Deprecation check (`-check deprecations`, from the `terraform plan -json`
 log) surfaces in SARIF and text. Scans-tab and Summary integration live;
 Drift-tab extension in place, not yet published. No releases yet.
 
-CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR; a push
-to `main` also publishes a `v0.1.<run>` release with the linux and windows
-binaries, which the `tf-drift-test-resources` drift pipeline downloads.
+CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
+`main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,
+which publish as pre-releases) and CI builds the linux + windows binaries and
+attaches them to a GitHub Release. The `tf-drift-test-resources` drift pipeline
+pulls the linux binary from the latest non-pre-release.
