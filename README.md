@@ -67,7 +67,10 @@ tf-snag -plan plan.json [flags]
                       declaring each resource (best effort, first match wins)
   -baseline file      previous run's tf-snag.sarif; with -format sarif, stamps
                       each result new / updated / absent
-  -exit-code          exit 2 when drift or a deprecation is detected (default true)
+  -ignore file        tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd
+                      or -source); matched findings are suppressed, not gated
+  -exit-code          exit 2 when an un-suppressed drift or deprecation is
+                      detected (default true)
   -version            print version and exit
 ```
 
@@ -158,13 +161,58 @@ something the file controls. The deprecation filter is a substring match on
 "deprecat" in the summary/detail — provider notices worded differently are
 missed for now.
 
-Exit codes: `0` clean, `2` drift or a deprecation detected, `2` on any error.
+Exit codes: `0` clean, `2` an un-suppressed drift or deprecation detected, `2`
+on any error.
 
 Try it against the bundled fixture:
 
 ```
 go run . -plan testdata/plan-drift.json
 ```
+
+## Ignoring findings
+
+A finding you've accepted stays in the report — SARIF `result.suppressions` (the
+Scans tab hides suppressed results by default; switch the **Suppression** filter
+to see them), an **ignored** section in `text`, an `### Ignored` table in
+`markdown`, a `<skipped>` case in `junit` — but no longer trips `-exit-code`.
+
+**Ignore file** — `-ignore <file>`, or an auto-discovered `.tf-snag-ignore.yml`
+(`.yaml`) in the working directory or the `-source` root:
+
+```yaml
+drift:
+  - address: "module.storage_account[0].azurerm_storage_account.sa"
+    reason: "temp tag from the deploy script — JIRA-123"
+  - address: "azurerm_role_assignment.*"     # * matches any run of characters
+    reason: "managed by PIM outside Terraform"
+deprecations:
+  - match: "live_trace_enabled"              # case-insensitive substring of
+    reason: "provider 4.0 upgrade tracked separately"   # summary + detail
+```
+
+A drift `address` is matched against both the full address and its trailing
+`type.name` (so `azurerm_role_assignment.*` catches
+`module.x.azurerm_role_assignment.foo`).
+
+**Inline comments** — active when `-source` points at the `.tf` tree. Put the
+directive inside a resource block or on the line(s) directly above a `resource`
+declaration:
+
+```hcl
+# tf-snag:ignore-drift  reason: managed by PIM
+resource "azurerm_role_assignment" "admin" { ... }
+
+resource "azurerm_signalr_service" "legacy" {
+  # tf-snag:ignore-deprecation reason: 4.0 upgrade in backlog
+  live_trace_enabled = true
+}
+```
+
+`# tf-snag:ignore` (both), `# tf-snag:ignore-drift`,
+`# tf-snag:ignore-deprecation`; the `reason:` (or `reason=`) trailer is
+optional. Inline rules are emitted as SARIF suppression `kind: "inSource"`, file
+rules as `"external"`.
 
 ## Azure DevOps
 
