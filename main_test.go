@@ -76,10 +76,14 @@ func TestRunSARIFFormat(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	for _, want := range []string{`"version": "2.1.0"`, `"ruleId": "resource-drift"`, `"name": "tf-snag"`, `"baselineState"`} {
+	for _, want := range []string{`"version": "2.1.0"`, `"ruleId": "resource-drift"`, `"name": "tf-snag"`, `"guid"`, `"driftAddress/v1"`} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("sarif output missing %q\n---\n%s", want, out.String())
 		}
+	}
+	// tf-snag leaves baselineState for the downstream Multitool pass.
+	if strings.Contains(out.String(), `"baselineState"`) {
+		t.Errorf("baselineState should not be emitted by tf-snag\n%s", out.String())
 	}
 }
 
@@ -243,8 +247,24 @@ func TestRunDeprecationsRejectsJSONFormat(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	if !strings.Contains(errb.String(), "sarif or text") {
+	if !strings.Contains(errb.String(), "sarif, text or markdown") {
 		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+func TestRunDeprecationsMarkdown(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-check", "all", "-plan", "testdata/plan-drift.json",
+		"-plan-log", "testdata/plan-log-deprecations.jsonl", "-format", "markdown"},
+		strings.NewReader(""), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	s := out.String()
+	for _, want := range []string{"deprecation warning", "### Deprecation warnings", "Argument is deprecated"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("markdown missing %q\n---\n%s", want, s)
+		}
 	}
 }
 

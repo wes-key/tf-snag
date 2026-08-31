@@ -4,6 +4,7 @@
 package report
 
 import (
+	"crypto/sha1"
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wes-key/tf-snag/internal/plan"
 )
@@ -397,9 +399,9 @@ func attrLines(attrs []plan.AttrDiff) string {
 
 // WriteMarkdown renders the report as Markdown for Azure DevOps'
 // `##vso[task.uploadsummary]`, which shows it on the run's Summary tab under
-// "Extensions". That renderer only handles a basic subset — headings, bold,
-// italic, inline code and lists — so this deliberately avoids tables, raw HTML
-// and `<details>`, all of which show up as literal text there.
+// "Extensions". Drift and deprecation detail use pipe tables; if a future
+// Extensions renderer shows those as literal text, fall back to nested lists.
+// Still no raw HTML or `<details>` — those do render as literal text there.
 func (r *Report) WriteMarkdown(w io.Writer) error {
 	bw := &errWriter{w: w}
 	add, chg, del := tally(r.Pending)
@@ -415,6 +417,9 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 		}
 		bw.printf("%s\n", line)
 	}
+	if r.HasDeprecations() {
+		bw.printf("🟡 **%d deprecation warning%s**\n", len(r.Deprecations), plural(len(r.Deprecations)))
+	}
 	meta := fmt.Sprintf("pending: %d to add, %d to change, %d to destroy", add, chg, del)
 	if r.TerraformVersion != "" {
 		meta = "Terraform " + r.TerraformVersion + " · " + meta
@@ -423,29 +428,80 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 
 	if len(r.Drift) > 0 {
 		bw.printf("\n### Changed outside Terraform\n\n")
+		bw.printf("| Resource | Attribute | Change |\n|---|---|---|\n")
 		for _, rr := range r.Drift {
-			bw.printf("**`%s`** · %s%s\n", mdText(rr.Address), rr.Action, mdItalicModule(rr.Module))
+			res := "`" + mdCell(rr.Address) + "`"
+			if rr.Module != "" {
+				res += " _(" + mdCell(rr.Module) + ")_"
+			}
 			if len(rr.Attrs) == 0 {
-				bw.printf("- _%s_\n\n", mdText(rr.summaryLine()))
+				bw.printf("| %s | — | %s |\n", res, mdCell(rr.summaryLine()))
 				continue
 			}
 			for _, a := range rr.Attrs {
-				bw.printf("- `%s`: `%s` → `%s`\n",
-					mdText(a.Path), mdText(clip(render(a.Old), 200)), mdText(clip(render(a.New), 200)))
+				bw.printf("| %s | `%s` | `%s` → `%s` |\n", res,
+					mdCell(a.Path), mdCell(clip(render(a.Old), 100)), mdCell(clip(render(a.New), 100)))
 			}
-			bw.printf("\n")
 		}
 	}
 
 	if len(r.Pending) > 0 {
-		bw.printf("### Pending changes from configuration\n\n")
+		bw.printf("\n### Pending changes from configuration\n\n")
 		bw.printf("_%d to add, %d to change, %d to destroy_\n\n", add, chg, del)
 		for _, rr := range r.Pending {
 			bw.printf("- `%s` `%s`%s\n", sign(rr.Action), mdText(rr.Address), mdItalicModule(rr.Module))
 		}
 	}
 
+	if r.HasDeprecations() {
+		bw.printf("\n### Deprecation warnings\n\n")
+		bw.printf("| Deprecation | Resources |\n|---|---|\n")
+		for _, d := range r.Deprecations {
+			dep := "**" + mdCell(d.Summary) + "**"
+			if d.Detail != "" {
+				dep += " — " + mdCell(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200))
+			}
+			sites := make([]string, len(d.Sites))
+			for i, s := range d.Sites {
+				sites[i] = mdSiteCell(s)
+			}
+			bw.printf("| %s | %s |\n", dep, strings.Join(sites, ", "))
+		}
+	}
+
 	return bw.err
+}
+
+// mdCell escapes a string for use inside a Markdown table cell.
+func mdCell(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	return mdText(s)
+}
+
+// mdSiteCell renders a deprecation site for a table cell: `addr` (file:line).
+func mdSiteCell(s DeprecationSite) string {
+	loc := s.File
+	if s.File != "" && s.Line > 0 {
+		loc = fmt.Sprintf("%s:%d", s.File, s.Line)
+	}
+	switch {
+	case s.Address != "" && loc != "":
+		return "`" + mdCell(s.Address) + "` (" + mdCell(loc) + ")"
+	case s.Address != "":
+		return "`" + mdCell(s.Address) + "`"
+	default:
+		return "`" + mdCell(loc) + "`"
+	}
+}
+
+// firstSentence trims s to its first sentence when that leaves a useful amount
+// of text; otherwise it clips to max runes.
+func firstSentence(s string, max int) string {
+	if i := strings.Index(s, ". "); i >= 40 && i < max {
+		return s[:i+1]
+	}
+	return clip(s, max)
 }
 
 func plural(n int) string {
@@ -515,7 +571,10 @@ type sarifText struct {
 }
 
 type sarifResult struct {
-	RuleID              string            `json:"ruleId"`
+	RuleID string `json:"ruleId"`
+	// GUID is a deterministic per-finding id (see resultGUID) used to match a
+	// result against the previous run when -baseline is given.
+	GUID                string            `json:"guid,omitempty"`
 	Level               string            `json:"level"`
 	BaselineState       string            `json:"baselineState,omitempty"`
 	Message             sarifText         `json:"message"`
@@ -523,7 +582,15 @@ type sarifResult struct {
 	RelatedLocations    []sarifLocation   `json:"relatedLocations,omitempty"`
 	LogicalLocations    []sarifLogicalLoc `json:"logicalLocations,omitempty"`
 	PartialFingerprints map[string]string `json:"partialFingerprints,omitempty"`
-	Properties          map[string]string `json:"properties,omitempty"`
+	// Provenance.firstDetectionTimeUtc — set only under -baseline: the time the
+	// finding was first seen, forwarded from the previous run. The Scans tab
+	// renders it as a "First Observed" date and an "Age" column.
+	Provenance *sarifProvenance  `json:"provenance,omitempty"`
+	Properties map[string]string `json:"properties,omitempty"`
+}
+
+type sarifProvenance struct {
+	FirstDetectionTimeUtc string `json:"firstDetectionTimeUtc,omitempty"`
 }
 
 type sarifLocation struct {
@@ -577,7 +644,15 @@ var sarifRules = []sarifRule{
 // per notice in r.Deprecations. src maps "<type>.<name>" to the .tf declaration
 // (may be nil) for drift locations; deprecation locations come from the plan
 // log itself. A clean report writes an empty results array.
-func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
+//
+// Every result carries a deterministic `guid` (see resultGUID) and a
+// `partialFingerprints` entry. When prior is non-nil (from ParsePriorSARIF of
+// the previous run's tf-snag.sarif), each result is stamped with a
+// `baselineState` — `new`, or `updated` when it was also in the previous run —
+// by matching on guid, and any prior result that has now gone is re-emitted as
+// `absent`. When prior is nil, no `baselineState` is set and the Scans tab
+// shows every row as "New".
+func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc, prior *PriorResults) error {
 	run := sarifRun{
 		Tool: sarifTool{Driver: sarifDriver{
 			Name:           "tf-snag",
@@ -589,16 +664,16 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 
 	for _, rr := range r.Drift {
 		res := sarifResult{
-			RuleID:        "resource-drift",
-			Level:         sarifLevel(rr.Action),
-			BaselineState: sarifBaseline(rr.Action),
-			Message:       sarifText{Text: rr.sarifMessage()},
+			RuleID:  "resource-drift",
+			GUID:    resultGUID("resource-drift", rr.Address),
+			Level:   sarifLevel(rr.Action),
+			Message: sarifText{Text: rr.sarifMessage()},
 			LogicalLocations: []sarifLogicalLoc{{
 				FullyQualifiedName: rr.Address,
 				Name:               resourceName(rr.Address),
 				Kind:               "resource",
 			}},
-			PartialFingerprints: map[string]string{"driftAddress": rr.Address},
+			PartialFingerprints: map[string]string{"driftAddress/v1": rr.Address},
 			Properties:          sarifProps(rr),
 		}
 
@@ -611,15 +686,17 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 		}
 		res.Locations = []sarifLocation{loc}
 
+		prior.stamp(&res)
 		run.Results = append(run.Results, res)
 	}
 
 	for _, d := range r.Deprecations {
 		res := sarifResult{
 			RuleID:              "deprecation",
+			GUID:                resultGUID("deprecation", d.key()),
 			Level:               sarifSeverityLevel(d.Severity),
 			Message:             sarifText{Text: deprecationMessage(d)},
-			PartialFingerprints: map[string]string{"deprecation": d.key()},
+			PartialFingerprints: map[string]string{"deprecation/v1": d.key()},
 			Properties:          deprecationProps(d),
 		}
 		for i, s := range d.Sites {
@@ -641,8 +718,11 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc) error {
 			res.Locations = []sarifLocation{siteLocation(DeprecationSite{})}
 		}
 
+		prior.stamp(&res)
 		run.Results = append(run.Results, res)
 	}
+
+	run.Results = append(run.Results, prior.absent()...)
 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -676,18 +756,222 @@ func sarifLevel(action string) string {
 	}
 }
 
-// sarifBaseline reuses SARIF's baselineState vocabulary to describe the drift:
-// a resource gone from the real world is "absent", a new one "new", an edited
-// one "updated". Without it the Scans tab shows every row as "new".
-func sarifBaseline(action string) string {
-	switch action {
-	case "delete":
-		return "absent"
-	case "create":
-		return "new"
-	default:
-		return "updated"
+// sarifNS is a fixed namespace UUID for deriving result GUIDs (RFC 4122 v5).
+// Any constant UUID works; it must never change or every finding's guid moves.
+var sarifNS = [16]byte{
+	0x7d, 0x3a, 0x2c, 0x91, 0x4b, 0x8e, 0x4f, 0x1a,
+	0x9c, 0x6d, 0x2e, 0x5f, 0x0a, 0x1b, 0x3c, 0x4d,
+}
+
+// resultGUID derives a deterministic RFC 4122 v5 UUID from the finding's kind
+// and stable identity, so the same finding gets the same guid on every run.
+// Sarif.Multitool uses it as the primary key when matching results between a
+// run and its predecessor to compute baselineState.
+func resultGUID(kind, identity string) string {
+	h := sha1.New()
+	h.Write(sarifNS[:])
+	h.Write([]byte(kind + "\x00" + identity))
+	b := h.Sum(nil)[:16]
+	b[6] = b[6]&0x0f | 0x50 // version 5
+	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// --- baseline (new / updated / absent) ---------------------------------
+
+// PriorResults is the previous run's SARIF results, indexed by identity, for
+// baseline comparison. The zero value / a nil *PriorResults means "no baseline"
+// — WriteSARIF then leaves baselineState unset.
+type PriorResults struct {
+	byKey map[string]*priorResult
+}
+
+type priorResult struct {
+	ruleID    string
+	level     string
+	message   string
+	loc       []sarifLocation
+	logloc    []sarifLogicalLoc
+	fp        map[string]string
+	guid      string
+	firstSeen string // provenance.firstDetectionTimeUtc, "" if the prior run had none
+	matched   bool
+}
+
+// ParsePriorSARIF reads a tf-snag SARIF log (a previous run's tf-snag.sarif) so
+// the next WriteSARIF can diff against it. Malformed JSON is an error; a log
+// with no runs/results yields an empty set (everything will read as "new").
+func ParsePriorSARIF(raw []byte) (*PriorResults, error) {
+	raw, err := plan.DecodeUTF(raw)
+	if err != nil {
+		return nil, fmt.Errorf("parsing baseline SARIF: %w", err)
 	}
+	var log sarifLog
+	if err := json.Unmarshal(raw, &log); err != nil {
+		return nil, fmt.Errorf("parsing baseline SARIF: %w", err)
+	}
+	pr := &PriorResults{byKey: map[string]*priorResult{}}
+	for _, run := range log.Runs {
+		for _, res := range run.Results {
+			var firstSeen string
+			if res.Provenance != nil {
+				firstSeen = res.Provenance.FirstDetectionTimeUtc
+			}
+			pr.byKey[resultKey(res)] = &priorResult{
+				ruleID:    res.RuleID,
+				level:     res.Level,
+				message:   stripAge(res.Message.Text),
+				loc:       res.Locations,
+				logloc:    res.LogicalLocations,
+				fp:        res.PartialFingerprints,
+				guid:      res.GUID,
+				firstSeen: firstSeen,
+			}
+		}
+	}
+	return pr, nil
+}
+
+// resultKey is a result's cross-run identity: its guid, else a stable rendering
+// of its partialFingerprints, else ruleId + message text.
+func resultKey(res sarifResult) string {
+	if res.GUID != "" {
+		return "g:" + res.GUID
+	}
+	if len(res.PartialFingerprints) > 0 {
+		keys := make([]string, 0, len(res.PartialFingerprints))
+		for k := range res.PartialFingerprints {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var b strings.Builder
+		b.WriteString("f:")
+		for _, k := range keys {
+			fmt.Fprintf(&b, "%s=%s;", k, res.PartialFingerprints[k])
+		}
+		return b.String()
+	}
+	return "r:" + res.RuleID + "\x00" + stripAge(res.Message.Text)
+}
+
+// stamp sets res.BaselineState from the prior run: unmatched -> "new", anything
+// carried over from the previous run -> "updated". We never emit "unchanged":
+// the Scans tab hides that state by default and we want persistent drift and
+// deprecations to stay on screen — provenance.firstDetectionTimeUtc (forwarded
+// from the prior result, or now for a new one) is what tells long-standing
+// findings apart from genuinely new ones. A nil receiver is a no-op.
+func (pr *PriorResults) stamp(res *sarifResult) {
+	if pr == nil {
+		return
+	}
+	p, ok := pr.byKey[resultKey(*res)]
+	if !ok {
+		now := nowUTC()
+		res.BaselineState = "new"
+		res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: now}
+		res.Message.Text = withAge(res.Message.Text, now)
+		return
+	}
+	p.matched = true
+	res.BaselineState = "updated"
+	seen := p.firstSeen
+	if seen == "" {
+		seen = nowUTC() // prior run predates provenance tracking
+	}
+	res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: seen}
+	res.Message.Text = withAge(res.Message.Text, seen)
+}
+
+// nowUTC is the current time as a SARIF timestamp; a var so tests can pin it.
+var nowUTC = func() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// ageParens is the " (first seen <date>, <n> days ago)" note tacked onto the
+// end of a baselined result message's first line — the Azure DevOps Scans tab
+// has no Age column, so this is the only place the first-detection time shows
+// there. Returns "" if firstSeenUTC is unparseable.
+func ageParens(firstSeenUTC string) string {
+	t, err := time.Parse(time.RFC3339, firstSeenUTC)
+	if err != nil {
+		return ""
+	}
+	days := int(time.Now().UTC().Sub(t).Hours() / 24)
+	switch {
+	case days <= 0:
+		return " (first seen today)"
+	case days == 1:
+		return " (first seen " + t.Format("2006-01-02") + ", 1 day ago)"
+	default:
+		return fmt.Sprintf(" (first seen %s, %d days ago)", t.Format("2006-01-02"), days)
+	}
+}
+
+// withAge inserts ageParens at the end of msg's first line.
+func withAge(msg, firstSeenUTC string) string {
+	p := ageParens(firstSeenUTC)
+	if p == "" {
+		return msg
+	}
+	if i := strings.IndexByte(msg, '\n'); i >= 0 {
+		return msg[:i] + p + msg[i:]
+	}
+	return msg + p
+}
+
+// stripAge removes any " (first seen ...)" note so a previous run's message
+// round-trips cleanly.
+func stripAge(msg string) string {
+	for {
+		i := strings.Index(msg, " (first seen ")
+		if i < 0 {
+			return msg
+		}
+		j := strings.IndexByte(msg[i:], ')')
+		if j < 0 {
+			return msg
+		}
+		msg = msg[:i] + msg[i+j+1:]
+	}
+}
+
+// absent returns one "absent" result per prior result that no current result
+// matched — a drift remediated or a deprecation removed since last run. Sorted
+// by rule then message for stable output. Nil receiver -> nil.
+func (pr *PriorResults) absent() []sarifResult {
+	if pr == nil {
+		return nil
+	}
+	var out []sarifResult
+	for _, p := range pr.byKey {
+		if p.matched {
+			continue
+		}
+		lvl := p.level
+		if lvl == "" {
+			lvl = "note"
+		}
+		res := sarifResult{
+			RuleID:              p.ruleID,
+			GUID:                p.guid,
+			Level:               lvl,
+			BaselineState:       "absent",
+			Message:             sarifText{Text: p.message},
+			Locations:           p.loc,
+			LogicalLocations:    p.logloc,
+			PartialFingerprints: p.fp,
+		}
+		if p.firstSeen != "" {
+			res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: p.firstSeen}
+			res.Message.Text = withAge(res.Message.Text, p.firstSeen)
+		}
+		out = append(out, res)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RuleID != out[j].RuleID {
+			return out[i].RuleID < out[j].RuleID
+		}
+		return out[i].Message.Text < out[j].Message.Text
+	})
+	return out
 }
 
 func sarifProps(rr ResourceReport) map[string]string {
