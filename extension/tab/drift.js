@@ -179,24 +179,32 @@
       el("div", { class: "tfd-muted", text: metaLine(report, pending, ignoredDrift.length + ignoredDeps.length, build) })
     ]));
 
-    r.appendChild(sectionTable("Changed outside Terraform", activeDrift, {
+    r.appendChild(section("Changed outside Terraform", activeDrift, {
       headers: ["Resource", "Module", "Change"],
       emptyText: "Nothing has changed outside Terraform for this run.",
-      expandFirst: true,
       row: driftRowFn(linker)
     }));
 
-    r.appendChild(sectionTable("Deprecations", activeDeps, {
+    r.appendChild(section("Deprecations", activeDeps, {
       headers: ["Deprecation", "Resource", "Severity"],
       emptyText: "No deprecation warnings in the plan.",
       row: deprRowFn(linker)
     }));
 
-    if (ignoredDrift.length || ignoredDeps.length) {
-      r.appendChild(ignoredSection(ignoredDrift, ignoredDeps));
+    if (ignoredDrift.length) {
+      r.appendChild(collapsedSection("Ignored drift", ignoredDrift, {
+        headers: ["Resource", "Module", "Change", "Reason"],
+        row: ignoredDriftRowFn(linker)
+      }));
+    }
+    if (ignoredDeps.length) {
+      r.appendChild(collapsedSection("Ignored deprecations", ignoredDeps, {
+        headers: ["Deprecation", "Resource", "Reason"],
+        row: ignoredDeprRowFn(linker)
+      }));
     }
 
-    r.appendChild(sectionTable("Pending changes from configuration", pending, {
+    r.appendChild(section("Pending changes from configuration", pending, {
       headers: ["Resource", "Module", "Change"],
       emptyText: "No pending changes — configuration matches state.",
       infoHead: "Unapplied config changes",
@@ -309,27 +317,51 @@
 
   // --- shared finding table --------------------------------------
 
-  // sectionTable lays out drift, deprecations and pending changes identically:
-  // a sign column, opts.headers columns, an optional "First seen" column, and an
-  // expandable detail row. opts.row(item) -> { sign:{glyph,cls}, primary:Node,
-  // secondary, tertiary, detail:Node|null }.
-  function sectionTable(title, items, opts) {
+  // section = a heading (+ count), optional info banner, empty-state line, and a
+  // findingTable of the items.
+  function section(title, items, opts) {
     var wrap = el("section", { class: "tfd-section" }, [
       el("h3", { class: "tfd-h3" }, [title, el("span", { class: "tfd-count", text: String(items.length) })])
     ]);
-
     if (opts.infoText) {
       wrap.appendChild(el("div", { class: "tfd-banner tfd-banner-info" }, [
         el("strong", { text: opts.infoHead || "For context" }),
         el("div", { class: "tfd-muted", text: opts.infoText })
       ]));
     }
-
     if (!items.length) {
       wrap.appendChild(el("p", { class: "tfd-muted tfd-empty", text: opts.emptyText }));
       return wrap;
     }
+    wrap.appendChild(findingTable(items, opts));
+    return wrap;
+  }
 
+  // collapsedSection = a section whose findingTable is hidden until the heading
+  // is clicked. Used for the ignored-* groups.
+  function collapsedSection(title, items, opts) {
+    var wrap = el("section", { class: "tfd-section" });
+    var body = el("div", { class: "tfd-hidden" }, [findingTable(items, opts)]);
+    var caret = el("span", { class: "tfd-caret", text: "▸" });
+    var h3 = el("h3", { class: "tfd-h3 tfd-h3-toggle" }, [
+      caret, title, el("span", { class: "tfd-count", text: String(items.length) })
+    ]);
+    h3.addEventListener("click", function () {
+      var hidden = body.classList.toggle("tfd-hidden");
+      caret.textContent = hidden ? "▸" : "▾";
+      resize();
+    });
+    wrap.appendChild(h3);
+    wrap.appendChild(body);
+    return wrap;
+  }
+
+  // findingTable renders items as one table: a sign column, opts.headers columns
+  // (headers[0] labels the primary/expand column; the rest label opts.row's
+  // cells[]), an optional "First seen" column, and an expandable detail row.
+  // opts.row(item) -> { sign:{glyph,cls}, primary:Node, cells:[Node|string,...],
+  // detail:Node|null }. All rows start collapsed.
+  function findingTable(items, opts) {
     var showProv = items.some(function (x) { return x.baseline_state || x.first_seen; });
     var head = [el("th", { class: "tfd-col-sign", text: "" })];
     opts.headers.forEach(function (h) { head.push(el("th", { text: h })); });
@@ -339,24 +371,24 @@
     var table = el("table", { class: "tfd-table" }, [el("thead", null, [el("tr", null, head)])]);
     var tbody = el("tbody");
 
-    items.forEach(function (item, idx) {
+    items.forEach(function (item) {
       var d = opts.row(item);
       var expandable = !!d.detail;
-      var open = expandable && opts.expandFirst && idx === 0;
 
       var tr = el("tr", { class: "tfd-row" + (expandable ? " tfd-row-x" : "") });
       tr.appendChild(el("td", { class: "tfd-col-sign " + (d.sign.cls || ""), text: d.sign.glyph || "" }));
       tr.appendChild(el("td", { class: "tfd-addr" }, [
-        expandable ? el("span", { class: "tfd-caret", text: open ? "▾" : "▸" }) : el("span", { class: "tfd-caret-blank" }),
+        expandable ? el("span", { class: "tfd-caret", text: "▸" }) : el("span", { class: "tfd-caret-blank" }),
         d.primary
       ]));
-      tr.appendChild(dataCell("tfd-muted", d.secondary, "—"));
-      tr.appendChild(dataCell("", d.tertiary, ""));
+      (d.cells || []).forEach(function (c, ci) {
+        tr.appendChild(dataCell(ci === 0 ? "tfd-muted" : "", c, ci === 0 ? "—" : ""));
+      });
       if (showProv) tr.appendChild(el("td", null, [provCell(item)]));
       tbody.appendChild(tr);
 
       if (expandable) {
-        var drow = el("tr", { class: "tfd-detail" + (open ? "" : " tfd-hidden") });
+        var drow = el("tr", { class: "tfd-detail tfd-hidden" });
         drow.appendChild(el("td", { colspan: String(cols) }, [d.detail]));
         tbody.appendChild(drow);
         tr.addEventListener("click", function () {
@@ -368,8 +400,7 @@
     });
 
     table.appendChild(tbody);
-    wrap.appendChild(table);
-    return wrap;
+    return table;
   }
 
   function dataCell(cls, val, fallback) {
@@ -379,30 +410,55 @@
     return el("td", cls ? { class: cls } : null, [kid]);
   }
 
-  // badge is a small pill with a category-tinted background (change action,
-  // deprecation severity).
+  // badge is a small pill with a category-tinted background + matching border
+  // (change action, deprecation severity).
   function badge(text, kind) {
     return el("span", { class: "tfd-badge tfd-badge-" + (kind || "noop"), text: text });
   }
 
+  function actionBadge(action) {
+    var a = action || "noop";
+    return badge(a, a.replace(/[^a-z]/g, ""));
+  }
+
+  // moduleOrFile fills the "Module" column: the module path when the resource is
+  // in one, else a link to the .tf that declares it, else "—".
+  function moduleOrFile(row, linker) {
+    if (row.module) return row.module;
+    return locNode(linker, row.file, row.line) || "—";
+  }
+
+  function srcLine(linker, file, line) {
+    var loc = locNode(linker, file, line);
+    if (!loc) return null;
+    return el("div", { class: "tfd-srcline" }, [el("span", { class: "tfd-muted", text: "Source: " }), loc]);
+  }
+
+  function ruleLine(item) {
+    return el("div", { class: "tfd-srcline" }, [
+      el("span", { class: "tfd-muted", text: "Rule: " }),
+      el("code", { text: item.suppress_source || "(unknown)" })
+    ]);
+  }
+
+  // --- drift / pending ------------------------------------------
+
   function driftRowFn(linker) {
     return function (row) {
       var attrs = row.attributes || [];
-      var loc = locNode(linker, row.file, row.line);
+      // root resources show their file in the Module column; module resources
+      // get it here (that column shows the module path for them).
+      var src = row.module ? srcLine(linker, row.file, row.line) : null;
       var detail = null;
-      if (attrs.length || loc) {
+      if (attrs.length || src) {
         detail = el("div", { class: "tfd-detail-body" });
         if (attrs.length) detail.appendChild(attrTable(attrs));
-        if (loc) detail.appendChild(el("div", { class: "tfd-srcline" }, [
-          el("span", { class: "tfd-muted", text: "Source: " }), loc
-        ]));
+        if (src) detail.appendChild(src);
       }
-      var action = row.action || "noop";
       return {
-        sign: { glyph: SIGN[row.action] || "?", cls: "tfd-sign-" + action },
+        sign: { glyph: SIGN[row.action] || "?", cls: "tfd-sign-" + (row.action || "noop") },
         primary: el("code", { text: row.address || "(unknown)" }),
-        secondary: row.module || "—",
-        tertiary: badge(action, action.replace(/[^a-z]/g, "")),
+        cells: [moduleOrFile(row, linker), actionBadge(row.action)],
         detail: detail
       };
     };
@@ -416,91 +472,124 @@
     ]);
     var body = el("tbody");
     attrs.forEach(function (a) {
+      var from = valueOf(a.old), to = valueOf(a.new);
+      var d = splitDiff(from, to);
       body.appendChild(el("tr", null, [
         el("td", null, [el("code", { text: a.path || "" })]),
-        el("td", null, [el("code", { class: "tfd-old", text: valueOf(a.old) })]),
-        el("td", null, [el("code", { class: "tfd-new", text: valueOf(a.new) })])
+        el("td", null, [diffCode("tfd-old", d.prefix, d.aMid, d.suffix, from)]),
+        el("td", null, [diffCode("tfd-new", d.prefix, d.bMid, d.suffix, to)])
       ]));
     });
     t.appendChild(body);
     return t;
   }
 
+  // splitDiff finds the shared prefix and suffix of a and b; the middles (aMid /
+  // bMid) are the part that actually changed.
+  function splitDiff(a, b) {
+    var max = Math.min(a.length, b.length);
+    var i = 0;
+    while (i < max && a.charAt(i) === b.charAt(i)) i++;
+    var j = 0;
+    while (j < max - i && a.charAt(a.length - 1 - j) === b.charAt(b.length - 1 - j)) j++;
+    return {
+      prefix: a.slice(0, i),
+      aMid: a.slice(i, a.length - j),
+      bMid: b.slice(i, b.length - j),
+      suffix: a.slice(a.length - j)
+    };
+  }
+
+  // diffCode renders one From/To value with the changed span in a <mark>. If
+  // nothing is shared (prefix and suffix both empty) the value is left plain —
+  // the red/green colour already carries the signal.
+  function diffCode(cls, prefix, mid, suffix, whole) {
+    var code = el("code", { class: cls });
+    if (prefix === "" && suffix === "") {
+      code.textContent = whole;
+      return code;
+    }
+    code.appendChild(document.createTextNode(prefix));
+    if (mid !== "") code.appendChild(el("mark", { class: "tfd-diff", text: mid }));
+    code.appendChild(document.createTextNode(suffix));
+    return code;
+  }
+
   // --- deprecations -----------------------------------------------
+
+  function deprDetail(linker, d) {
+    var sites = d.sites || [];
+    if (!d.detail && !sites.length) return null;
+    var body = el("div", { class: "tfd-detail-body" });
+    if (d.detail) body.appendChild(el("div", { class: "tfd-depr-detail", text: d.detail }));
+    if (sites.length) {
+      var ul = el("ul", { class: "tfd-depr-sites" });
+      sites.forEach(function (s) {
+        var kids = [el("code", { text: s.address || "(unknown)" })];
+        var loc = locNode(linker, s.file, s.line);
+        if (loc) { kids.push(document.createTextNode("  ")); kids.push(loc); }
+        ul.appendChild(el("li", null, kids));
+      });
+      body.appendChild(ul);
+    }
+    return body;
+  }
+
+  function deprFirstResource(d) {
+    var sites = d.sites || [];
+    var s0 = sites[0] || {};
+    var first = s0.address || (s0.file ? s0.file + (s0.line ? ":" + s0.line : "") : "");
+    var more = sites.length > 1 ? "  +" + (sites.length - 1) : "";
+    return first ? el("code", { text: first + more }) : "—";
+  }
+
+  function deprSign(sev) {
+    return { glyph: sev === "error" ? "✖" : "⚠", cls: "tfd-sev" + (sev === "error" ? " tfd-sev-error" : "") };
+  }
 
   function deprRowFn(linker) {
     return function (d) {
       var sev = (d.severity || "warning").toLowerCase();
-      var sites = d.sites || [];
-      var detail = null;
-      if (d.detail || sites.length) {
-        detail = el("div", { class: "tfd-detail-body" });
-        if (d.detail) detail.appendChild(el("div", { class: "tfd-depr-detail", text: d.detail }));
-        if (sites.length) {
-          var ul = el("ul", { class: "tfd-depr-sites" });
-          sites.forEach(function (s) {
-            var kids = [el("code", { text: s.address || "(unknown)" })];
-            var loc = locNode(linker, s.file, s.line);
-            if (loc) { kids.push(document.createTextNode("  ")); kids.push(loc); }
-            ul.appendChild(el("li", null, kids));
-          });
-          detail.appendChild(ul);
-        }
-      }
-      var s0 = sites[0] || {};
-      var first = s0.address || (s0.file ? s0.file + (s0.line ? ":" + s0.line : "") : "");
-      var more = sites.length > 1 ? "  +" + (sites.length - 1) : "";
       return {
-        sign: { glyph: sev === "error" ? "✖" : "⚠", cls: "tfd-sev" + (sev === "error" ? " tfd-sev-error" : "") },
+        sign: deprSign(sev),
         primary: el("strong", { text: d.summary || "Deprecated" }),
-        secondary: first ? el("code", { text: first + more }) : "—",
-        tertiary: badge(sev, sev),
-        detail: detail
+        cells: [deprFirstResource(d), badge(sev, sev)],
+        detail: deprDetail(linker, d)
       };
     };
   }
 
   // --- ignored (suppressed by an ignore rule) --------------------
 
-  // ignoredSection is collapsed by default: a clickable heading + count that
-  // expands to an item / reason / rule table.
-  function ignoredSection(drift, deps) {
-    var n = drift.length + deps.length;
-    var wrap = el("section", { class: "tfd-section" });
+  function ignoredDriftRowFn(linker) {
+    return function (row) {
+      var attrs = row.attributes || [];
+      var detail = el("div", { class: "tfd-detail-body" });
+      if (attrs.length) detail.appendChild(attrTable(attrs));
+      var src = row.module ? srcLine(linker, row.file, row.line) : null;
+      if (src) detail.appendChild(src);
+      detail.appendChild(ruleLine(row));
+      return {
+        sign: { glyph: SIGN[row.action] || "?", cls: "tfd-sign-" + (row.action || "noop") },
+        primary: el("code", { text: row.address || "(unknown)" }),
+        cells: [moduleOrFile(row, linker), actionBadge(row.action), row.suppress_reason || "no reason given"],
+        detail: detail
+      };
+    };
+  }
 
-    var body = el("div", { class: "tfd-hidden" });
-    var caret = el("span", { class: "tfd-caret", text: "▸" });
-    var h3 = el("h3", { class: "tfd-h3 tfd-h3-toggle" }, [
-      caret, "Ignored", el("span", { class: "tfd-count", text: String(n) })
-    ]);
-    h3.addEventListener("click", function () {
-      var hidden = body.classList.toggle("tfd-hidden");
-      caret.textContent = hidden ? "▸" : "▾";
-      resize();
-    });
-    wrap.appendChild(h3);
-
-    var table = el("table", { class: "tfd-table tfd-ignored" }, [
-      el("thead", null, [el("tr", null, [
-        el("th", { text: "Item" }), el("th", { text: "Reason" }), el("th", { text: "Rule" })
-      ])])
-    ]);
-    var tbody = el("tbody");
-
-    function row(item, r) {
-      tbody.appendChild(el("tr", null, [
-        el("td", null, [el("code", { text: item })]),
-        el("td", { text: r.suppress_reason || "no reason given" }),
-        el("td", { class: "tfd-muted", text: r.suppress_source || "" })
-      ]));
-    }
-    drift.forEach(function (d) { row(d.address || "(unknown)", d); });
-    deps.forEach(function (d) { row(d.summary || "deprecation", d); });
-
-    table.appendChild(tbody);
-    body.appendChild(table);
-    wrap.appendChild(body);
-    return wrap;
+  function ignoredDeprRowFn(linker) {
+    return function (d) {
+      var sev = (d.severity || "warning").toLowerCase();
+      var detail = deprDetail(linker, d) || el("div", { class: "tfd-detail-body" });
+      detail.appendChild(ruleLine(d));
+      return {
+        sign: deprSign(sev),
+        primary: el("strong", { text: d.summary || "Deprecated" }),
+        cells: [deprFirstResource(d), d.suppress_reason || "no reason given"],
+        detail: detail
+      };
+    };
   }
 
   function valueOf(v) {
