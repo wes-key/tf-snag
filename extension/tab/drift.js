@@ -379,6 +379,12 @@
     return el("td", cls ? { class: cls } : null, [kid]);
   }
 
+  // badge is a small pill with a category-tinted background (change action,
+  // deprecation severity).
+  function badge(text, kind) {
+    return el("span", { class: "tfd-badge tfd-badge-" + (kind || "noop"), text: text });
+  }
+
   function driftRowFn(linker) {
     return function (row) {
       var attrs = row.attributes || [];
@@ -391,11 +397,12 @@
           el("span", { class: "tfd-muted", text: "Source: " }), loc
         ]));
       }
+      var action = row.action || "noop";
       return {
-        sign: { glyph: SIGN[row.action] || "?", cls: "tfd-sign-" + (row.action || "noop") },
+        sign: { glyph: SIGN[row.action] || "?", cls: "tfd-sign-" + action },
         primary: el("code", { text: row.address || "(unknown)" }),
         secondary: row.module || "—",
-        tertiary: (row.action || "") + (attrs.length ? "  (" + attrs.length + " attr" + (attrs.length === 1 ? "" : "s") + ")" : ""),
+        tertiary: badge(action, action.replace(/[^a-z]/g, "")),
         detail: detail
       };
     };
@@ -447,7 +454,7 @@
         sign: { glyph: sev === "error" ? "✖" : "⚠", cls: "tfd-sev" + (sev === "error" ? " tfd-sev-error" : "") },
         primary: el("strong", { text: d.summary || "Deprecated" }),
         secondary: first ? el("code", { text: first + more }) : "—",
-        tertiary: sev,
+        tertiary: badge(sev, sev),
         detail: detail
       };
     };
