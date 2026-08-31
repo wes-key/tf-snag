@@ -63,8 +63,9 @@ tf-snag -plan plan.json [flags]
                       (also: all) (default "drift")
   -format string      text | json | markdown | junit | sarif (default "text")
   -color string       colorize text output: auto | always | never (default "auto")
-  -source dir         Terraform source dir; sarif locations link to the .tf
-                      declaring each resource (best effort, first match wins)
+  -source dir         Terraform source dir; sarif/json findings carry the .tf
+                      file+line declaring each resource (best effort, first
+                      match wins)
   -baseline file      previous run's tf-snag.sarif; with -format sarif or json,
                       stamps each result new / updated (sarif also emits absent)
   -ignore file        tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd
@@ -92,7 +93,8 @@ module version plus the embedded git revision.
 
 Formats: `text` for humans/console, `json` for the tf-snag run-tab extension
 (carries a `schema` version — currently **2**: drift, deprecations, ignore-rule
-suppression, and `-baseline` provenance), `markdown` for
+suppression, `-baseline` provenance, and per-drift `file`/`line` with `-source`),
+`markdown` for
 `##vso[task.uploadsummary]`, `sarif` for the "SARIF SAST Scans Tab" extension,
 `junit` for `PublishTestResults@2`. Resources created/destroyed outside
 Terraform are summarised in one line rather than diffed attribute-by-attribute

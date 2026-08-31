@@ -79,7 +79,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	format := fs.String("format", "text", "output format: text, json, markdown, junit or sarif")
 	exitCode := fs.Bool("exit-code", true, "exit 2 when drift or a deprecation is detected")
 	color := fs.String("color", "auto", "colorize text output: auto, always or never")
-	source := fs.String("source", "", "Terraform source `dir`; when set, sarif locations link to the .tf file declaring each resource")
+	source := fs.String("source", "", "Terraform source `dir`; when set, sarif/json findings carry the .tf file+line declaring each resource")
 	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif`/`json` then stamps each result new/updated (sarif also emits absent)")
 	ignorePath := fs.String("ignore", "", "tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd or -source); suppressed findings stay in the report but do not trip -exit-code")
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -201,6 +201,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			err = rep.WriteText(stdout)
 		}
 	case "json":
+		if *source != "" {
+			srcIndex, serr := indexTFSources(*source)
+			if serr != nil {
+				fmt.Fprintln(stderr, "tf-snag:", serr)
+				return 2
+			}
+			rep.AttachSourceLocations(srcIndex)
+		}
 		if *baseline != "" {
 			prior, code := loadPrior(*baseline, stderr)
 			if code != 0 {

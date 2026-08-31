@@ -560,6 +560,25 @@ func TestWriteSARIFUsesSourceLocation(t *testing.T) {
 	}
 }
 
+func TestAttachSourceLocations(t *testing.T) {
+	r := Build(deletedVaultPlan()) // one drift: ...azurerm_key_vault.vault
+	r.AttachSourceLocations(map[string]SourceLoc{
+		"azurerm_key_vault.vault": {File: "terraform/modules/kv/main.tf", Line: 12},
+		"azurerm_other.thing":     {File: "x.tf", Line: 1},
+	})
+	if r.Drift[0].File != "terraform/modules/kv/main.tf" || r.Drift[0].Line != 12 {
+		t.Errorf("drift file/line = %q/%d, want terraform/modules/kv/main.tf/12", r.Drift[0].File, r.Drift[0].Line)
+	}
+
+	// nil src and an unmatched resource are both no-ops (File stays empty).
+	r2 := Build(deletedVaultPlan())
+	r2.AttachSourceLocations(nil)
+	r2.AttachSourceLocations(map[string]SourceLoc{"nope.nope": {File: "y.tf", Line: 2}})
+	if r2.Drift[0].File != "" || r2.Drift[0].Line != 0 {
+		t.Errorf("unmatched drift got file/line %q/%d", r2.Drift[0].File, r2.Drift[0].Line)
+	}
+}
+
 func TestWriteSARIFCleanReportHasEmptyResults(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Build(&plan.Plan{TerraformVersion: "1.9.6"}).WriteSARIF(&buf, nil, nil); err != nil {

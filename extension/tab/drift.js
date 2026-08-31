@@ -169,6 +169,7 @@
     var activeDeps = deps.filter(notSuppressed);
     var ignoredDrift = drift.filter(isSuppressed);
     var ignoredDeps = deps.filter(isSuppressed);
+    var linker = fileLinker(build);
 
     var gating = activeDrift.length + activeDeps.length;
 
@@ -178,21 +179,32 @@
       el("div", { class: "tfd-muted", text: metaLine(report, pending, ignoredDrift.length + ignoredDeps.length, build) })
     ]));
 
-    r.appendChild(driftSection("Changed outside Terraform", activeDrift, true,
-      "Nothing has changed outside Terraform for this run."));
+    r.appendChild(sectionTable("Changed outside Terraform", activeDrift, {
+      headers: ["Resource", "Module", "Change"],
+      emptyText: "Nothing has changed outside Terraform for this run.",
+      expandFirst: true,
+      row: driftRowFn(linker)
+    }));
 
-    r.appendChild(deprSection("Deprecations", activeDeps,
-      "No deprecation warnings in the plan."));
+    r.appendChild(sectionTable("Deprecations", activeDeps, {
+      headers: ["Deprecation", "Resource", "Severity"],
+      emptyText: "No deprecation warnings in the plan.",
+      row: deprRowFn(linker)
+    }));
 
     if (ignoredDrift.length || ignoredDeps.length) {
       r.appendChild(ignoredSection(ignoredDrift, ignoredDeps));
     }
 
-    r.appendChild(driftSection("Pending changes from configuration", pending, false,
-      "No pending changes — configuration matches state.",
-      "Changes terraform plan would apply from your configuration to reach the " +
-      "desired state. Shown for context — these are not drift and do not affect " +
-      "the run outcome."));
+    r.appendChild(sectionTable("Pending changes from configuration", pending, {
+      headers: ["Resource", "Module", "Change"],
+      emptyText: "No pending changes — configuration matches state.",
+      infoHead: "Unapplied config changes",
+      infoText: "Updates to the Terraform configuration that have not been applied yet — " +
+        "a terraform apply would enact them. Shown for context: this is not drift " +
+        "(a change made outside Terraform), and the drift check does not gate on it.",
+      row: driftRowFn(null)
+    }));
 
     resize();
   }
@@ -249,67 +261,106 @@
     return date + " · " + days + "d ago";
   }
 
-  function hasProvenance(rows) {
-    return rows.some(function (r) { return r.baseline_state || r.first_seen; });
+  // --- source links -------------------------------------------------
+
+  // fileLinker returns fn(file, line) -> URL into the run's repo, or null when
+  // the repo type isn't linkable. Azure Repos Git and GitHub are handled.
+  function fileLinker(build) {
+    var repo = build && build.repository;
+    if (!repo) return null;
+    var type = (repo.type || "").toLowerCase();
+    var sha = build.sourceVersion || "";
+
+    if (type === "tfsgit" || type === "git") {
+      var wc = VSS.getWebContext();
+      var host = (wc.collection && wc.collection.uri) || (wc.host && wc.host.uri) || "";
+      var proj = wc.project && wc.project.name;
+      if (!host || !proj || !repo.name) return null;
+      if (host.charAt(host.length - 1) !== "/") host += "/";
+      return function (file, line) {
+        var u = host + encodeURIComponent(proj) + "/_git/" + encodeURIComponent(repo.name) +
+          "?path=" + encodeURIComponent("/" + file);
+        if (sha) u += "&version=GC" + sha;
+        if (line) u += "&line=" + line + "&lineEnd=" + (line + 1) +
+          "&lineStartColumn=1&lineEndColumn=1&lineStyle=plain&_a=contents";
+        return u;
+      };
+    }
+    if (type === "github" || type === "githubenterprise") {
+      var base = (repo.url || "").replace(/\.git$/, "");
+      if (!/^https?:\/\//.test(base)) return null;
+      var ref = sha || "HEAD";
+      return function (file, line) {
+        return base + "/blob/" + ref + "/" +
+          file.split("/").map(encodeURIComponent).join("/") + (line ? "#L" + line : "");
+      };
+    }
+    return null;
   }
 
-  // --- drift / pending tables -----------------------------------------
+  // locNode renders "path:line" as a repo link when possible, muted text if not.
+  function locNode(linker, file, line) {
+    if (!file) return null;
+    var label = file + (line ? ":" + line : "");
+    var href = linker && linker(file, line);
+    if (!href) return el("span", { class: "tfd-loc tfd-muted", text: label });
+    return el("a", { class: "tfd-loc", href: href, target: "_blank", rel: "noopener noreferrer", text: label });
+  }
 
-  function driftSection(title, rows, expandFirst, emptyText, infoText) {
+  // --- shared finding table --------------------------------------
+
+  // sectionTable lays out drift, deprecations and pending changes identically:
+  // a sign column, opts.headers columns, an optional "First seen" column, and an
+  // expandable detail row. opts.row(item) -> { sign:{glyph,cls}, primary:Node,
+  // secondary, tertiary, detail:Node|null }.
+  function sectionTable(title, items, opts) {
     var wrap = el("section", { class: "tfd-section" }, [
-      el("h3", { class: "tfd-h3" }, [title, el("span", { class: "tfd-count", text: String(rows.length) })])
+      el("h3", { class: "tfd-h3" }, [title, el("span", { class: "tfd-count", text: String(items.length) })])
     ]);
 
-    if (infoText) {
+    if (opts.infoText) {
       wrap.appendChild(el("div", { class: "tfd-banner tfd-banner-info" }, [
-        el("strong", { text: "For context" }),
-        el("div", { class: "tfd-muted", text: infoText })
+        el("strong", { text: opts.infoHead || "For context" }),
+        el("div", { class: "tfd-muted", text: opts.infoText })
       ]));
     }
 
-    if (!rows.length) {
-      wrap.appendChild(el("p", { class: "tfd-muted tfd-empty", text: emptyText }));
+    if (!items.length) {
+      wrap.appendChild(el("p", { class: "tfd-muted tfd-empty", text: opts.emptyText }));
       return wrap;
     }
 
-    var showProv = hasProvenance(rows);
-    var head = [
-      el("th", { class: "tfd-col-sign", text: "" }),
-      el("th", { text: "Resource" }),
-      el("th", { text: "Module" }),
-      el("th", { text: "Change" })
-    ];
+    var showProv = items.some(function (x) { return x.baseline_state || x.first_seen; });
+    var head = [el("th", { class: "tfd-col-sign", text: "" })];
+    opts.headers.forEach(function (h) { head.push(el("th", { text: h })); });
     if (showProv) head.push(el("th", { text: "First seen" }));
+    var cols = head.length;
 
     var table = el("table", { class: "tfd-table" }, [el("thead", null, [el("tr", null, head)])]);
     var tbody = el("tbody");
-    var cols = showProv ? 5 : 4;
 
-    rows.forEach(function (row) {
-      var attrs = row.attributes || [];
-      var expandable = attrs.length > 0;
-      var open = expandable && expandFirst;
+    items.forEach(function (item, idx) {
+      var d = opts.row(item);
+      var expandable = !!d.detail;
+      var open = expandable && opts.expandFirst && idx === 0;
 
       var tr = el("tr", { class: "tfd-row" + (expandable ? " tfd-row-x" : "") });
-      tr.appendChild(el("td", { class: "tfd-col-sign tfd-sign-" + (row.action || "noop"), text: SIGN[row.action] || "?" }));
+      tr.appendChild(el("td", { class: "tfd-col-sign " + (d.sign.cls || ""), text: d.sign.glyph || "" }));
       tr.appendChild(el("td", { class: "tfd-addr" }, [
         expandable ? el("span", { class: "tfd-caret", text: open ? "▾" : "▸" }) : el("span", { class: "tfd-caret-blank" }),
-        el("code", { text: row.address || "(unknown)" })
+        d.primary
       ]));
-      tr.appendChild(el("td", { class: "tfd-muted", text: row.module || "—" }));
-      tr.appendChild(el("td", { text: (row.action || "") + (expandable ? "  (" + attrs.length + " attr" + (attrs.length === 1 ? "" : "s") + ")" : "") }));
-      if (showProv) tr.appendChild(el("td", null, [provCell(row)]));
+      tr.appendChild(dataCell("tfd-muted", d.secondary, "—"));
+      tr.appendChild(dataCell("", d.tertiary, ""));
+      if (showProv) tr.appendChild(el("td", null, [provCell(item)]));
       tbody.appendChild(tr);
 
       if (expandable) {
-        var detail = el("tr", { class: "tfd-detail" + (open ? "" : " tfd-hidden") });
-        var cell = el("td", { colspan: String(cols) });
-        cell.appendChild(attrTable(attrs));
-        detail.appendChild(cell);
-        tbody.appendChild(detail);
-
+        var drow = el("tr", { class: "tfd-detail" + (open ? "" : " tfd-hidden") });
+        drow.appendChild(el("td", { colspan: String(cols) }, [d.detail]));
+        tbody.appendChild(drow);
         tr.addEventListener("click", function () {
-          var hidden = detail.classList.toggle("tfd-hidden");
+          var hidden = drow.classList.toggle("tfd-hidden");
           tr.querySelector(".tfd-caret").textContent = hidden ? "▸" : "▾";
           resize();
         });
@@ -319,6 +370,35 @@
     table.appendChild(tbody);
     wrap.appendChild(table);
     return wrap;
+  }
+
+  function dataCell(cls, val, fallback) {
+    var kid = (val == null || val === "")
+      ? document.createTextNode(fallback || "")
+      : (typeof val === "string" ? document.createTextNode(val) : val);
+    return el("td", cls ? { class: cls } : null, [kid]);
+  }
+
+  function driftRowFn(linker) {
+    return function (row) {
+      var attrs = row.attributes || [];
+      var loc = locNode(linker, row.file, row.line);
+      var detail = null;
+      if (attrs.length || loc) {
+        detail = el("div", { class: "tfd-detail-body" });
+        if (attrs.length) detail.appendChild(attrTable(attrs));
+        if (loc) detail.appendChild(el("div", { class: "tfd-srcline" }, [
+          el("span", { class: "tfd-muted", text: "Source: " }), loc
+        ]));
+      }
+      return {
+        sign: { glyph: SIGN[row.action] || "?", cls: "tfd-sign-" + (row.action || "noop") },
+        primary: el("code", { text: row.address || "(unknown)" }),
+        secondary: row.module || "—",
+        tertiary: (row.action || "") + (attrs.length ? "  (" + attrs.length + " attr" + (attrs.length === 1 ? "" : "s") + ")" : ""),
+        detail: detail
+      };
+    };
   }
 
   function attrTable(attrs) {
@@ -339,55 +419,59 @@
     return t;
   }
 
-  // --- deprecations --------------------------------------------------
+  // --- deprecations -----------------------------------------------
 
-  function deprSection(title, deps, emptyText) {
-    var wrap = el("section", { class: "tfd-section" }, [
-      el("h3", { class: "tfd-h3" }, [title, el("span", { class: "tfd-count", text: String(deps.length) })])
-    ]);
-
-    if (!deps.length) {
-      wrap.appendChild(el("p", { class: "tfd-muted tfd-empty", text: emptyText }));
-      return wrap;
-    }
-
-    deps.forEach(function (d) {
+  function deprRowFn(linker) {
+    return function (d) {
       var sev = (d.severity || "warning").toLowerCase();
-      var hd = el("div", { class: "tfd-depr-hd" }, [
-        el("span", null, [
-          el("span", { class: "tfd-sev" + (sev === "error" ? " tfd-sev-error" : ""), text: sev === "error" ? "✖" : "⚠" }),
-          el("strong", { text: d.summary || "Deprecated" })
-        ]),
-        (d.baseline_state || d.first_seen) ? provCell(d) : null
-      ]);
-
-      var block = el("div", { class: "tfd-depr" }, [hd]);
-      if (d.detail) block.appendChild(el("div", { class: "tfd-depr-detail", text: d.detail }));
-
       var sites = d.sites || [];
-      if (sites.length) {
-        var ul = el("ul", { class: "tfd-depr-sites" });
-        sites.forEach(function (s) {
-          var loc = s.file ? s.file + (s.line ? ":" + s.line : "") : "";
-          var kids = [el("code", { text: s.address || loc || "(unknown)" })];
-          if (s.address && loc) kids.push(el("span", { class: "tfd-muted", text: "  " + loc }));
-          ul.appendChild(el("li", null, kids));
-        });
-        block.appendChild(ul);
+      var detail = null;
+      if (d.detail || sites.length) {
+        detail = el("div", { class: "tfd-detail-body" });
+        if (d.detail) detail.appendChild(el("div", { class: "tfd-depr-detail", text: d.detail }));
+        if (sites.length) {
+          var ul = el("ul", { class: "tfd-depr-sites" });
+          sites.forEach(function (s) {
+            var kids = [el("code", { text: s.address || "(unknown)" })];
+            var loc = locNode(linker, s.file, s.line);
+            if (loc) { kids.push(document.createTextNode("  ")); kids.push(loc); }
+            ul.appendChild(el("li", null, kids));
+          });
+          detail.appendChild(ul);
+        }
       }
-      wrap.appendChild(block);
-    });
-
-    return wrap;
+      var s0 = sites[0] || {};
+      var first = s0.address || (s0.file ? s0.file + (s0.line ? ":" + s0.line : "") : "");
+      var more = sites.length > 1 ? "  +" + (sites.length - 1) : "";
+      return {
+        sign: { glyph: sev === "error" ? "✖" : "⚠", cls: "tfd-sev" + (sev === "error" ? " tfd-sev-error" : "") },
+        primary: el("strong", { text: d.summary || "Deprecated" }),
+        secondary: first ? el("code", { text: first + more }) : "—",
+        tertiary: sev,
+        detail: detail
+      };
+    };
   }
 
-  // --- ignored (suppressed by an ignore rule) ----------------------
+  // --- ignored (suppressed by an ignore rule) --------------------
 
+  // ignoredSection is collapsed by default: a clickable heading + count that
+  // expands to an item / reason / rule table.
   function ignoredSection(drift, deps) {
     var n = drift.length + deps.length;
-    var wrap = el("section", { class: "tfd-section" }, [
-      el("h3", { class: "tfd-h3" }, ["Ignored", el("span", { class: "tfd-count", text: String(n) })])
+    var wrap = el("section", { class: "tfd-section" });
+
+    var body = el("div", { class: "tfd-hidden" });
+    var caret = el("span", { class: "tfd-caret", text: "▸" });
+    var h3 = el("h3", { class: "tfd-h3 tfd-h3-toggle" }, [
+      caret, "Ignored", el("span", { class: "tfd-count", text: String(n) })
     ]);
+    h3.addEventListener("click", function () {
+      var hidden = body.classList.toggle("tfd-hidden");
+      caret.textContent = hidden ? "▸" : "▾";
+      resize();
+    });
+    wrap.appendChild(h3);
 
     var table = el("table", { class: "tfd-table tfd-ignored" }, [
       el("thead", null, [el("tr", null, [
@@ -407,7 +491,8 @@
     deps.forEach(function (d) { row(d.summary || "deprecation", d); });
 
     table.appendChild(tbody);
-    wrap.appendChild(table);
+    body.appendChild(table);
+    wrap.appendChild(body);
     return wrap;
   }
 
