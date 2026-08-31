@@ -2,9 +2,9 @@
   "manifestVersion": 1,
   "id": "tf-snag-tab",
   "publisher": "wes-key",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "name": "tf-snag drift report",
-  "description": "Adds a \"Drift\" tab to the pipeline run showing resources Terraform found changed outside of it, as reported by the tf-snag CLI.",
+  "description": "Adds a \"tf-snag\" tab to the pipeline run showing drift and deprecation warnings reported by the tf-snag CLI, with ignore-rule and baseline (first-seen) awareness.",
   "public": false,
   "categories": ["Azure Pipelines"],
   "tags": ["terraform", "drift", "infrastructure", "iac"],
@@ -29,7 +29,7 @@
       "type": "ms.vss-build-web.build-results-tab",
       "targets": ["ms.vss-build-web.build-results-view"],
       "properties": {
-        "name": "Drift",
+        "name": "tf-snag",
         "uri": "tab/drift.html"
       }
     }

@@ -65,8 +65,8 @@ tf-snag -plan plan.json [flags]
   -color string       colorize text output: auto | always | never (default "auto")
   -source dir         Terraform source dir; sarif locations link to the .tf
                       declaring each resource (best effort, first match wins)
-  -baseline file      previous run's tf-snag.sarif; with -format sarif, stamps
-                      each result new / updated / absent
+  -baseline file      previous run's tf-snag.sarif; with -format sarif or json,
+                      stamps each result new / updated (sarif also emits absent)
   -ignore file        tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd
                       or -source); matched findings are suppressed, not gated
   -exit-code          exit 2 when an un-suppressed drift or deprecation is
@@ -77,9 +77,9 @@ tf-snag -plan plan.json [flags]
 `-check deprecations` reads the newline-delimited JSON that `terraform plan
 -json` writes (not the `terraform show -json` plan representation, which carries
 no diagnostics) and reports the deprecation warnings in it. It supports `-format
-sarif`, `-format text` and `-format markdown`. `-check all` runs both analyses;
-drift then reads `-plan` and deprecations read `-plan-log` (only one may come
-from stdin).
+sarif`, `json`, `text` and `markdown` (not `junit`, which is drift-only).
+`-check all` runs both analyses; drift then reads `-plan` and deprecations read
+`-plan-log` (only one may come from stdin).
 
 `-color=auto` colours the `text` output when stdout is a terminal (and
 `NO_COLOR` is unset); Azure DevOps logs render ANSI, so the pipeline passes
@@ -90,15 +90,15 @@ go1.23.4`. The version is stamped by `.github/workflows/ci.yml`
 (`-ldflags "-X main.version=0.1.<run>"`); a plain `go build` falls back to the
 module version plus the embedded git revision.
 
-Formats: `text` for humans/console, `json` for the run-tab extension (carries a
-`schema` version), `markdown` for `##vso[task.uploadsummary]`, `sarif` for the
-"SARIF SAST Scans Tab" extension, `junit` for `PublishTestResults@2`. Resources
-created/destroyed outside Terraform are summarised in one line rather than
-diffed attribute-by-attribute against null. Pending changes appear in `text`,
-`json` and `markdown` only. Deprecations (`-check deprecations`) appear in
-`sarif`, `text` and `markdown` — the Summary-tab markdown is the fallback when
-the "SARIF SAST Scans Tab" extension is not installed. `json`/`junit` do not
-carry deprecations yet.
+Formats: `text` for humans/console, `json` for the tf-snag run-tab extension
+(carries a `schema` version — currently **2**: drift, deprecations, ignore-rule
+suppression, and `-baseline` provenance), `markdown` for
+`##vso[task.uploadsummary]`, `sarif` for the "SARIF SAST Scans Tab" extension,
+`junit` for `PublishTestResults@2`. Resources created/destroyed outside
+Terraform are summarised in one line rather than diffed attribute-by-attribute
+against null. Pending changes appear in `text`, `json` and `markdown` only.
+Deprecations (`-check deprecations`) appear in
+`sarif`, `json`, `text` and `markdown`. `junit` is drift-only.
 
 The `sarif` output is one flat result per drifted resource:
 
@@ -133,6 +133,11 @@ baselined run on (the first has no prior timestamp to carry).
 
 Without `-baseline`, `baselineState` and `provenance` are left unset and the
 Scans tab shows every row as `New`.
+
+`-format json -baseline` does the same guid diff on the report model: every
+drift and deprecation gets `baseline_state` (`new` / `updated`) and `first_seen`
+(RFC 3339), which the tf-snag tab renders as a "new" pill or a "first seen …"
+note. `absent` findings are SARIF-only (JSON lists live findings).
 
 Drift results share one rule, `resource-drift`; the kind (`Deleted` / `Updated`
 / `Created`) leads the message. No glyph on it — the severity icon in column 0
@@ -246,12 +251,15 @@ Where each lands on the run page:
 
 | Surface | Mechanism | Needs |
 |---|---|---|
+| dedicated **tf-snag** tab | `json` attachment + [`extension/`](extension/) | the extension published & installed — see `extension/README.md` |
 | **Scans** tab | `sarif` + `CodeAnalysisLogs` artifact | the "SARIF SAST Scans Tab" extension installed in the org |
 | **Summary** tab section | `markdown` + `task.uploadsummary` | nothing (built in) |
-| dedicated **Drift** tab | `json` attachment + [`extension/`](extension/) | the extension published & installed — see `extension/README.md` |
 
-The Scans tab carries both the `resource-drift` and (with `-check all`)
-`deprecation` groups from the one `tf-snag.sarif`.
+The tf-snag tab (schema 2) shows drift, deprecations, an "Ignored" section, and
+per-finding first-seen provenance — the same coverage as the Scans tab, in the
+org's own theme. The scheduled pipeline in `../tf-snag-test-resources` uses it as
+the sole surface; `../tf-drift-test-resources` still exercises the Scans/Summary
+path.
 
 `junit` is still emitted by the tool for anyone who prefers the built-in Tests
 tab (`PublishTestResults@2`); the scheduled pipeline uses the Scans tab instead.
@@ -262,8 +270,9 @@ tab (`PublishTestResults@2`); the scheduled pipeline uses the Scans tab instead.
 
 Early. Parser + text/JSON/markdown/JUnit/SARIF report + exit codes, covered by
 tests. Deprecation check (`-check deprecations`, from the `terraform plan -json`
-log) surfaces in SARIF and text. Scans-tab and Summary integration live;
-Drift-tab extension in place, not yet published. No releases yet.
+log) surfaces in SARIF, JSON, text and markdown. Ignore rules (file + inline)
+and `-baseline` provenance flow into JSON (schema 2). Scans-tab, Summary and the
+tf-snag run tab (`extension/`) integrations are live.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
 `main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,

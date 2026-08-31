@@ -963,6 +963,50 @@ func TestBaselineForwardsFirstDetection(t *testing.T) {
 	}
 }
 
+// StampReport is the -format json path: it stamps BaselineState + FirstSeen on
+// the Report model instead of on SARIF results.
+func TestStampReport(t *testing.T) {
+	prev := `{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"tf-snag","rules":[]}},"results":[{` +
+		`"ruleId":"resource-drift","guid":"` + resultGUID("resource-drift", "azurerm_x.old") + `",` +
+		`"level":"warning","message":{"text":"Updated"},` +
+		`"provenance":{"firstDetectionTimeUtc":"2026-01-02T03:04:05Z"}}]}]}`
+	prior, err := ParsePriorSARIF([]byte(prev))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer func(f func() string) { nowUTC = f }(nowUTC)
+	nowUTC = func() string { return "2026-08-31T00:00:00Z" }
+
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.old", map[string]any{"a": 1}, map[string]any{"a": 2}),
+		driftUpdate("azurerm_x.fresh", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	prior.StampReport(r)
+
+	byAddr := map[string]ResourceReport{}
+	for _, d := range r.Drift {
+		byAddr[d.Address] = d
+	}
+	if got := byAddr["azurerm_x.old"]; got.BaselineState != "updated" || got.FirstSeen != "2026-01-02T03:04:05Z" {
+		t.Errorf("carried-over drift: state=%q first_seen=%q, want updated / 2026-01-02T03:04:05Z", got.BaselineState, got.FirstSeen)
+	}
+	if got := byAddr["azurerm_x.fresh"]; got.BaselineState != "new" || got.FirstSeen != "2026-08-31T00:00:00Z" {
+		t.Errorf("new drift: state=%q first_seen=%q, want new / now", got.BaselineState, got.FirstSeen)
+	}
+}
+
+func TestStampReportNilPriorIsNoop(t *testing.T) {
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	var pr *PriorResults
+	pr.StampReport(r)
+	if r.Drift[0].BaselineState != "" || r.Drift[0].FirstSeen != "" {
+		t.Errorf("nil prior stamped state=%q first_seen=%q", r.Drift[0].BaselineState, r.Drift[0].FirstSeen)
+	}
+}
+
 func TestBaselineAbsentCarriesAgeNoteOnce(t *testing.T) {
 	// A prior result whose first line already carries a "(first seen …)" note.
 	prev := `{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"tf-snag","rules":[]}},"results":[{` +

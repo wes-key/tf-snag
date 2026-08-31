@@ -18,18 +18,20 @@ import (
 )
 
 // ReportSchema is the version of the JSON emitted by WriteJSON. Consumers (the
-// tf-snag-tab Azure DevOps extension) key off it and should refuse a version
-// they do not recognise. Bump it on any breaking change to the JSON shape.
-const ReportSchema = 1
+// tf-snag Azure DevOps extension) key off it and should refuse a version they do
+// not recognise. Bump it on any breaking change to the JSON shape.
+//
+// v2: `deprecations` is now carried (schema 1 dropped it); every drift and
+// deprecation may carry `suppressed`/`suppress_*` (ignore rules) and, when
+// `-baseline` was given, `baseline_state` + `first_seen` (provenance).
+const ReportSchema = 2
 
 type Report struct {
 	Schema           int              `json:"schema"`
 	TerraformVersion string           `json:"terraform_version"`
 	Drift            []ResourceReport `json:"drift"`
 	Pending          []ResourceReport `json:"pending"`
-	// Deprecations is populated only when `-check` asks for it. It rides on the
-	// same Report so WriteSARIF/writeText can emit it alongside drift, but it is
-	// omitted from WriteJSON output until the JSON schema is bumped to carry it.
+	// Deprecations is populated only when `-check` asks for it.
 	Deprecations []Deprecation `json:"deprecations,omitempty"`
 }
 
@@ -45,6 +47,10 @@ type Deprecation struct {
 	SuppressReason string `json:"suppress_reason,omitempty"`
 	SuppressSrc    string `json:"suppress_source,omitempty"` // where the rule came from
 	SuppressKind   string `json:"-"`                         // "inSource" | "external" — SARIF only
+
+	// Set by PriorResults.StampReport when -baseline was given.
+	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
+	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
 }
 
 // DeprecationSite is one place a deprecation fires — a resource address and,
@@ -97,6 +103,10 @@ type ResourceReport struct {
 	SuppressReason string `json:"suppress_reason,omitempty"`
 	SuppressSrc    string `json:"suppress_source,omitempty"` // where the rule came from
 	SuppressKind   string `json:"-"`                         // "inSource" | "external" — SARIF only
+
+	// Set by PriorResults.StampReport when -baseline was given.
+	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
+	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
 }
 
 // SourceLoc is where a resource is declared in the Terraform source, used to
@@ -986,6 +996,47 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 	}
 	res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: seen}
 	res.Message.Text = withAge(res.Message.Text, seen)
+}
+
+// StampReport sets BaselineState + FirstSeen on every drift and deprecation in
+// r by matching each against the previous run — the same guid derivation
+// WriteSARIF uses. Unmatched -> "new" + FirstSeen now; carried over -> "updated"
+// + the prior run's FirstSeen (or now, if the prior run predates provenance).
+// A nil receiver is a no-op: findings stay unstamped and the extension renders
+// them as "new". Used by `-format json -baseline`.
+func (pr *PriorResults) StampReport(r *Report) {
+	if pr == nil {
+		return
+	}
+	now := nowUTC()
+	for i := range r.Drift {
+		st, seen := pr.matchGUID(resultGUID("resource-drift", r.Drift[i].Address))
+		r.Drift[i].BaselineState = st
+		r.Drift[i].FirstSeen = firstOr(seen, now)
+	}
+	for i := range r.Deprecations {
+		st, seen := pr.matchGUID(resultGUID("deprecation", r.Deprecations[i].key()))
+		r.Deprecations[i].BaselineState = st
+		r.Deprecations[i].FirstSeen = firstOr(seen, now)
+	}
+}
+
+// matchGUID looks a finding up by the guid key ParsePriorSARIF stores under
+// ("g:"+guid) and reports its baseline state and prior first-seen time.
+func (pr *PriorResults) matchGUID(guid string) (state, firstSeen string) {
+	p, ok := pr.byKey["g:"+guid]
+	if !ok {
+		return "new", ""
+	}
+	p.matched = true
+	return "updated", p.firstSeen
+}
+
+func firstOr(v, fallback string) string {
+	if v == "" {
+		return fallback
+	}
+	return v
 }
 
 // nowUTC is the current time as a SARIF timestamp; a var so tests can pin it.
