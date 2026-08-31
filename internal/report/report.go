@@ -104,9 +104,29 @@ type ResourceReport struct {
 	SuppressSrc    string `json:"suppress_source,omitempty"` // where the rule came from
 	SuppressKind   string `json:"-"`                         // "inSource" | "external" — SARIF only
 
+	// Set by AttachSourceLocations when -source was given: the .tf that declares
+	// this resource (repo-relative, forward slashes) so consumers can link to it.
+	File string `json:"file,omitempty"`
+	Line int    `json:"line,omitempty"`
+
 	// Set by PriorResults.StampReport when -baseline was given.
 	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
 	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
+}
+
+// AttachSourceLocations fills File/Line on each drift resource from src (keyed
+// "<type>.<name>", the map produced by the -source index in main.go) — the same
+// lookup WriteSARIF does for physicalLocation, so `-format json` can link a
+// finding to the .tf that declares it. A nil src is a no-op.
+func (r *Report) AttachSourceLocations(src map[string]SourceLoc) {
+	if src == nil {
+		return
+	}
+	for i := range r.Drift {
+		if s, ok := src[r.Drift[i].Type+"."+resourceName(r.Drift[i].Address)]; ok {
+			r.Drift[i].File, r.Drift[i].Line = s.File, s.Line
+		}
+	}
 }
 
 // SourceLoc is where a resource is declared in the Terraform source, used to

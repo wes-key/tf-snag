@@ -385,3 +385,29 @@ func TestRunInlineIgnoreViaSource(t *testing.T) {
 		t.Errorf("text missing inline-ignored section:\n%s", out.String())
 	}
 }
+
+// -format json with -source carries the .tf file+line for each drifted resource
+// (testdata/tfsrc/main.tf declares azurerm_signalr_service.legacy at line 6).
+func TestRunJSONSourceLocations(t *testing.T) {
+	plan := `{"format_version":"1.2","terraform_version":"1.9.6","resource_drift":[` +
+		`{"address":"azurerm_signalr_service.legacy","type":"azurerm_signalr_service",` +
+		`"change":{"actions":["update"],"before":{"a":1},"after":{"a":2}}}],"resource_changes":[]}`
+	var out, errb bytes.Buffer
+	code := run([]string{"-format", "json", "-source", "testdata/tfsrc"}, strings.NewReader(plan), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 — stderr: %s", code, errb.String())
+	}
+	var doc struct {
+		Drift []struct {
+			Address string `json:"address"`
+			File    string `json:"file"`
+			Line    int    `json:"line"`
+		} `json:"drift"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("output not JSON: %v\n%s", err, out.String())
+	}
+	if len(doc.Drift) != 1 || doc.Drift[0].File != "main.tf" || doc.Drift[0].Line != 6 {
+		t.Errorf("drift[0] file/line = %q/%d, want main.tf/6 (%+v)", doc.Drift[0].File, doc.Drift[0].Line, doc.Drift)
+	}
+}

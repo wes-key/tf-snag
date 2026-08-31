@@ -6,15 +6,18 @@ Trivy, Mend, …) that renders the report produced by the
 
 - resources Terraform found changed **outside** Terraform, with the exact
   attribute diffs (`min_tls_version: "TLS1_2" → "TLS1_0"`);
-- deprecation warnings from the plan, with their source locations;
-- findings suppressed by an ignore rule, under an **Ignored** section
-  (reason + rule);
+- deprecation warnings from the plan;
+- findings suppressed by an ignore rule, in a collapsed **Ignored** section
+  (count in the heading, click to expand — reason + rule);
 - per-finding **first seen** provenance when the pipeline passes `-baseline`
   (a "new" pill, or a date + age);
 - pending changes from configuration, for context;
 - a status banner and an add/change/destroy tally.
 
-The tab follows the org's light/dark theme.
+Drift and deprecations use the same table layout, and each expandable row links
+to the `.tf` that declares the resource (Azure Repos Git and GitHub), the same
+way the Scans tab does — needs the pipeline to pass `-source`. The tab follows
+the org's light/dark theme.
 
 ## How it works
 
