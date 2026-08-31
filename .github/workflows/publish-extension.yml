@@ -1,0 +1,95 @@
+# Publishes the Azure DevOps "Drift" tab extension (extension/) to the Visual
+# Studio Marketplace.
+#
+# The extension is PRIVATE (vss-extension.json "public": false): it never shows
+# in Marketplace search and is only installable by orgs it is shared with, which
+# this workflow does via --share-with. To make it public later, flip "public" to
+# true in the manifest (a public listing then goes through Microsoft review).
+#
+# Manual, on-demand only. Prerequisites:
+#   - a Marketplace publisher matching vss-extension.json "publisher" (wes-key),
+#     created at https://marketplace.visualstudio.com/manage
+#   - repo secret TFX_MARKETPLACE_TOKEN: an Azure DevOps PAT, "All accessible
+#     organizations", scope Marketplace > Manage, owned by that publisher's account
+#   - optional repo variable ADO_ORG: the org to share the private extension with
+#     (defaults to danieljamesconstruction)
+#
+# Version published is 0.<minor>.<run_number> (minor taken from the manifest), so
+# re-runs always publish a higher version - the Marketplace rejects re-publishing
+# an existing one. Bump the minor in vss-extension.json for a deliberate step.
+
+name: Publish ADO extension
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "prod (tf-snag-tab) or dev (tf-snag-tab-dev, separate id)"
+        type: choice
+        options: [dev, prod]
+        default: dev
+      dry_run:
+        description: "Package the .vsix as a build artifact but do not publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Optional: create a "marketplace" environment with required reviewers to
+    # gate every publish behind a manual approval, and scope the PAT to it.
+    # environment: marketplace
+    defaults:
+      run:
+        working-directory: extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: extension/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      - name: Resolve version
+        id: ver
+        run: |
+          minor=$(node -p "require('./vss-extension.json').version.split('.')[1]")
+          echo "version=0.${minor}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: "${{ inputs.dry_run && 'Package (dry run)' || 'Package and publish' }} — ${{ inputs.channel }} v${{ steps.ver.outputs.version }}"
+        env:
+          TFX_PAT: ${{ secrets.TFX_MARKETPLACE_TOKEN }}
+          ADO_ORG: ${{ vars.ADO_ORG || 'danieljamesconstruction' }}
+          CHANNEL: ${{ inputs.channel }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eu
+          args=(--manifest-globs vss-extension.json --output-path dist
+                --override "{\"version\":\"${VERSION}\"}")
+          if [ "$CHANNEL" = dev ]; then
+            args+=(--overrides-file configs/dev.json)
+          fi
+          if [ "$DRY_RUN" = "true" ]; then
+            npx tfx-cli extension create "${args[@]}"
+          else
+            if [ -z "${TFX_PAT:-}" ]; then
+              echo "::error::secret TFX_MARKETPLACE_TOKEN is not set" >&2
+              exit 1
+            fi
+            npx tfx-cli extension publish "${args[@]}" \
+              --auth-type pat --token "$TFX_PAT" \
+              --share-with "$ADO_ORG"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tf-snag-tab-${{ inputs.channel }}-${{ steps.ver.outputs.version }}
+          path: extension/dist/*.vsix
+          if-no-files-found: error
