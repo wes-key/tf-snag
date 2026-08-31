@@ -241,6 +241,22 @@ func TestWriteMarkdownShowsDriftAndPending(t *testing.T) {
 	}
 }
 
+func TestFirstSentence(t *testing.T) {
+	// Splits on ". " when the first sentence is substantial.
+	s := "The resource has been superseded and is feature-frozen now. Whilst it stays available it gets no new features."
+	if got := firstSentence(s, 240); got != "The resource has been superseded and is feature-frozen now." {
+		t.Errorf("split = %q", got)
+	}
+	// A short leading fragment is kept whole (don't cut at an abbreviation).
+	if got := firstSentence("See v6.0. Migrate soon.", 240); got != "See v6.0. Migrate soon." {
+		t.Errorf("short-fragment keep = %q", got)
+	}
+	// No ". " at all -> clip to max.
+	if got := firstSentence(strings.Repeat("x", 400), 50); len([]rune(got)) != 50 {
+		t.Errorf("clip len = %d, want 50", len([]rune(got)))
+	}
+}
+
 func TestWriteMarkdownShowsDeprecations(t *testing.T) {
 	r := Build(&plan.Plan{TerraformVersion: "1.9.6"})
 	r.Deprecations = []Deprecation{{
@@ -259,9 +275,10 @@ func TestWriteMarkdownShowsDeprecations(t *testing.T) {
 		"🟢 **No drift detected**",
 		"🟡 **1 deprecation warning**",
 		"### Deprecation warnings",
-		`**Argument is deprecated** — Use "live_trace" instead.`,
-		"- `azurerm_signalr_service.a` _(terraform/main.tf:46)_",
-		"- `azurerm_signalr_service.b` _(terraform/main.tf:59)_",
+		"#### Argument is deprecated",
+		`Use "live_trace" instead.`,
+		"- `azurerm_signalr_service.a` — `terraform/main.tf:46`",
+		"- `azurerm_signalr_service.b` — `terraform/main.tf:59`",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("markdown missing %q\n---\n%s", want, out)

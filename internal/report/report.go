@@ -436,7 +436,7 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 			}
 			for _, a := range rr.Attrs {
 				bw.printf("- `%s`: `%s` → `%s`\n",
-					mdText(a.Path), mdText(clip(render(a.Old), 200)), mdText(clip(render(a.New), 200)))
+					mdText(a.Path), mdText(clip(render(a.Old), 120)), mdText(clip(render(a.New), 120)))
 			}
 			bw.printf("\n")
 		}
@@ -453,11 +453,10 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 	if r.HasDeprecations() {
 		bw.printf("\n### Deprecation warnings\n\n")
 		for _, d := range r.Deprecations {
-			head := "**" + mdText(d.Summary) + "**"
+			bw.printf("#### %s\n\n", mdText(d.Summary))
 			if d.Detail != "" {
-				head += " — " + mdText(clip(strings.ReplaceAll(d.Detail, "\n", " "), 300))
+				bw.printf("%s\n\n", mdText(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 240)))
 			}
-			bw.printf("%s\n", head)
 			for _, s := range d.Sites {
 				bw.printf("%s\n", mdSite(s))
 			}
@@ -476,12 +475,21 @@ func mdSite(s DeprecationSite) string {
 	}
 	switch {
 	case s.Address != "" && loc != "":
-		return "- `" + mdText(s.Address) + "` _(" + mdText(loc) + ")_"
+		return "- `" + mdText(s.Address) + "` — `" + mdText(loc) + "`"
 	case s.Address != "":
 		return "- `" + mdText(s.Address) + "`"
 	default:
 		return "- `" + mdText(loc) + "`"
 	}
+}
+
+// firstSentence trims s to its first sentence when that leaves a useful amount
+// of text; otherwise it clips to max runes.
+func firstSentence(s string, max int) string {
+	if i := strings.Index(s, ". "); i >= 40 && i < max {
+		return s[:i+1]
+	}
+	return clip(s, max)
 }
 
 func plural(n int) string {
