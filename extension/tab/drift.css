@@ -22,6 +22,10 @@
 
   --tfd-add: #107c10;
   --tfd-del: #c50f1f;
+
+  /* highlight for the changed span inside a From/To value */
+  --tfd-diff-del: rgba(200, 40, 40, 0.26);
+  --tfd-diff-add: rgba(16, 124, 16, 0.26);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -29,10 +33,13 @@
     --tfd-hover: rgba(255, 255, 255, 0.06);
     --tfd-add: #4ec94e;
     --tfd-del: #ff8a8a;
-    --tfd-ok-bg: rgba(78, 201, 78, 0.13);
-    --tfd-warn-bg: rgba(214, 143, 28, 0.16);
-    --tfd-err-bg: rgba(255, 138, 138, 0.12);
-    --tfd-info-bg: rgba(90, 170, 255, 0.13);
+    --tfd-warn-bd: #e0a63f;
+    --tfd-ok-bg: rgba(78, 201, 78, 0.18);
+    --tfd-warn-bg: rgba(224, 166, 63, 0.20);
+    --tfd-err-bg: rgba(255, 138, 138, 0.16);
+    --tfd-info-bg: rgba(90, 170, 255, 0.16);
+    --tfd-diff-del: rgba(255, 138, 138, 0.32);
+    --tfd-diff-add: rgba(78, 201, 78, 0.30);
   }
 }
 
@@ -134,6 +141,13 @@ a.tfd-loc:hover { text-decoration: underline; }
 .tfd-attrs code { word-break: break-all; }
 .tfd-old { color: var(--tfd-del); }
 .tfd-new { color: var(--tfd-add); }
+.tfd-attrs mark.tfd-diff {
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.tfd-old mark.tfd-diff { background: var(--tfd-diff-del); }
+.tfd-new mark.tfd-diff { background: var(--tfd-diff-add); }
 
 /* provenance pill */
 .tfd-pill {
@@ -146,13 +160,18 @@ a.tfd-loc:hover { text-decoration: underline; }
 }
 .tfd-pill-new { background: var(--tfd-accent); color: #ffffff; }
 
-/* category badge (change action, deprecation severity) */
+/* category badge (change action, deprecation severity). The 1px border in the
+   text colour keeps the shape crisp when the tinted background is faint —
+   notably in dark mode, where the ADO theme and prefers-color-scheme can
+   disagree and leave the tint washed out. */
 .tfd-badge {
   display: inline-block;
-  padding: 1px 8px;
+  padding: 0 8px;
+  border: 1px solid currentColor;
   border-radius: 9px;
   font-size: 11px;
   font-weight: 600;
+  line-height: 16px;
   text-transform: capitalize;
 }
 .tfd-badge-create   { background: var(--tfd-ok-bg);   color: var(--tfd-add); }
@@ -173,7 +192,3 @@ a.tfd-loc:hover { text-decoration: underline; }
 .tfd-depr-sites { margin: 8px 0 0; padding: 0; list-style: none; }
 .tfd-depr-sites li { font-size: 12px; }
 .tfd-depr-sites code { word-break: break-all; }
-
-/* ignored table */
-.tfd-ignored td { color: var(--tfd-muted); }
-.tfd-ignored code { color: var(--tfd-fg); }
