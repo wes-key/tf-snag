@@ -399,9 +399,9 @@ func attrLines(attrs []plan.AttrDiff) string {
 
 // WriteMarkdown renders the report as Markdown for Azure DevOps'
 // `##vso[task.uploadsummary]`, which shows it on the run's Summary tab under
-// "Extensions". That renderer only handles a basic subset — headings, bold,
-// italic, inline code and lists — so this deliberately avoids tables, raw HTML
-// and `<details>`, all of which show up as literal text there.
+// "Extensions". Drift and deprecation detail use pipe tables; if a future
+// Extensions renderer shows those as literal text, fall back to nested lists.
+// Still no raw HTML or `<details>` — those do render as literal text there.
 func (r *Report) WriteMarkdown(w io.Writer) error {
 	bw := &errWriter{w: w}
 	add, chg, del := tally(r.Pending)
@@ -428,22 +428,25 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 
 	if len(r.Drift) > 0 {
 		bw.printf("\n### Changed outside Terraform\n\n")
+		bw.printf("| Resource | Attribute | Change |\n|---|---|---|\n")
 		for _, rr := range r.Drift {
-			bw.printf("**`%s`** · %s%s\n", mdText(rr.Address), rr.Action, mdItalicModule(rr.Module))
+			res := "`" + mdCell(rr.Address) + "`"
+			if rr.Module != "" {
+				res += " _(" + mdCell(rr.Module) + ")_"
+			}
 			if len(rr.Attrs) == 0 {
-				bw.printf("- _%s_\n\n", mdText(rr.summaryLine()))
+				bw.printf("| %s | — | %s |\n", res, mdCell(rr.summaryLine()))
 				continue
 			}
 			for _, a := range rr.Attrs {
-				bw.printf("- `%s`: `%s` → `%s`\n",
-					mdText(a.Path), mdText(clip(render(a.Old), 120)), mdText(clip(render(a.New), 120)))
+				bw.printf("| %s | `%s` | `%s` → `%s` |\n", res,
+					mdCell(a.Path), mdCell(clip(render(a.Old), 100)), mdCell(clip(render(a.New), 100)))
 			}
-			bw.printf("\n")
 		}
 	}
 
 	if len(r.Pending) > 0 {
-		bw.printf("### Pending changes from configuration\n\n")
+		bw.printf("\n### Pending changes from configuration\n\n")
 		bw.printf("_%d to add, %d to change, %d to destroy_\n\n", add, chg, del)
 		for _, rr := range r.Pending {
 			bw.printf("- `%s` `%s`%s\n", sign(rr.Action), mdText(rr.Address), mdItalicModule(rr.Module))
@@ -452,34 +455,43 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 
 	if r.HasDeprecations() {
 		bw.printf("\n### Deprecation warnings\n\n")
+		bw.printf("| Deprecation | Resources |\n|---|---|\n")
 		for _, d := range r.Deprecations {
-			bw.printf("#### %s\n\n", mdText(d.Summary))
+			dep := "**" + mdCell(d.Summary) + "**"
 			if d.Detail != "" {
-				bw.printf("%s\n\n", mdText(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 240)))
+				dep += " — " + mdCell(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200))
 			}
-			for _, s := range d.Sites {
-				bw.printf("%s\n", mdSite(s))
+			sites := make([]string, len(d.Sites))
+			for i, s := range d.Sites {
+				sites[i] = mdSiteCell(s)
 			}
-			bw.printf("\n")
+			bw.printf("| %s | %s |\n", dep, strings.Join(sites, ", "))
 		}
 	}
 
 	return bw.err
 }
 
-// mdSite renders a deprecation site as a Markdown list item.
-func mdSite(s DeprecationSite) string {
+// mdCell escapes a string for use inside a Markdown table cell.
+func mdCell(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "|", "\\|")
+	return mdText(s)
+}
+
+// mdSiteCell renders a deprecation site for a table cell: `addr` (file:line).
+func mdSiteCell(s DeprecationSite) string {
 	loc := s.File
 	if s.File != "" && s.Line > 0 {
 		loc = fmt.Sprintf("%s:%d", s.File, s.Line)
 	}
 	switch {
 	case s.Address != "" && loc != "":
-		return "- `" + mdText(s.Address) + "` — `" + mdText(loc) + "`"
+		return "`" + mdCell(s.Address) + "` (" + mdCell(loc) + ")"
 	case s.Address != "":
-		return "- `" + mdText(s.Address) + "`"
+		return "`" + mdCell(s.Address) + "`"
 	default:
-		return "- `" + mdText(loc) + "`"
+		return "`" + mdCell(loc) + "`"
 	}
 }
 

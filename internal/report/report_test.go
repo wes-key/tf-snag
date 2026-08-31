@@ -227,17 +227,15 @@ func TestWriteMarkdownShowsDriftAndPending(t *testing.T) {
 		"🔴 **1 resource changed outside Terraform**",
 		"_Terraform 1.9.6 · pending: 1 to add, 0 to change, 0 to destroy_",
 		"### Changed outside Terraform",
-		"**`azurerm_storage_account.data`** · update _(module.storage)_",
-		"- `min_tls_version`: `\"TLS1_2\"` → `\"TLS1_0\"`",
+		"| Resource | Attribute | Change |",
+		"|---|---|---|",
+		"| `azurerm_storage_account.data` _(module.storage)_ | `min_tls_version` | `\"TLS1_2\"` → `\"TLS1_0\"` |",
 		"### Pending changes from configuration",
 		"- `+` `azurerm_resource_group.new`",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("markdown missing %q\n---\n%s", want, out)
 		}
-	}
-	if strings.Contains(out, "|---") || strings.Contains(out, "| Resource |") {
-		t.Errorf("markdown contains a pipe table (does not render in the ADO summary):\n%s", out)
 	}
 }
 
@@ -275,10 +273,9 @@ func TestWriteMarkdownShowsDeprecations(t *testing.T) {
 		"🟢 **No drift detected**",
 		"🟡 **1 deprecation warning**",
 		"### Deprecation warnings",
-		"#### Argument is deprecated",
-		`Use "live_trace" instead.`,
-		"- `azurerm_signalr_service.a` — `terraform/main.tf:46`",
-		"- `azurerm_signalr_service.b` — `terraform/main.tf:59`",
+		"| Deprecation | Resources |",
+		`**Argument is deprecated** — Use "live_trace" instead.`,
+		"`azurerm_signalr_service.a` (terraform/main.tf:46), `azurerm_signalr_service.b` (terraform/main.tf:59)",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("markdown missing %q\n---\n%s", want, out)
