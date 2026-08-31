@@ -39,31 +39,48 @@ npm run package      # -> dist/<publisher>.tf-snag-tab-<version>.vsix
 
 ## Publish (private to this org)
 
-One-time: create a Marketplace **publisher** at
-<https://marketplace.visualstudio.com/manage> and put its ID in
-`vss-extension.json` (`"publisher"`).
+The extension is **private** (`"public": false` in `vss-extension.json`): it is
+never listed in Marketplace search and is only installable by orgs it has been
+explicitly shared with.
+
+**One-time setup**
+
+1. Create a Marketplace **publisher** at
+   <https://marketplace.visualstudio.com/manage> whose ID matches
+   `vss-extension.json` (`"publisher": "wes-key"`).
+2. Create an Azure DevOps **PAT**: *All accessible organizations*, scope
+   *Marketplace → Manage*, from an account that owns that publisher.
+3. Add it as the GitHub repo secret **`TFX_MARKETPLACE_TOKEN`**.
+4. Set repo variable **`ADO_ORG`** to the Azure DevOps org to share the private
+   extension with (required for a real publish; a dry run doesn't need it).
+
+**Publish** — run the **Publish ADO extension** workflow
+(`.github/workflows/publish-extension.yml`) from the Actions tab:
+
+- `channel: prod` → the `tf-snag-tab` id teams install; `channel: dev` →
+  a separate `tf-snag-tab-dev` id (via `configs/dev.json`) so you can iterate
+  without bumping the version teams have installed.
+- `dry_run: true` → builds the `.vsix` and uploads it as a run artifact without
+  publishing.
+- Version published is `0.<minor>.<run_number>` (minor from the manifest); bump
+  the minor in `vss-extension.json` for a deliberate step.
+
+The workflow shares the extension with `ADO_ORG` on every publish. Install it:
+**Organization settings → Extensions → Shared → tf-snag drift report →
+Install**.
+
+**Local publish** (fallback — needs the PAT in your shell):
 
 ```
-# PAT: All accessible orgs, Marketplace (Publish). Store it, don't inline it.
 export TFX_PAT=xxxxxxxx
-
 npx tfx-cli extension publish \
   --manifest-globs vss-extension.json \
-  --share-with danieljamesconstruction \
-  --auth-type pat --token "$TFX_PAT"
+  --share-with <your-azure-devops-org> \
+  --auth-type pat --token "$TFX_PAT" --rev-version
 ```
 
-Then install it into the org: **Organization settings → Extensions → Shared →
-tf-snag drift report → Install**.
-
-Bump `"version"` in `vss-extension.json` on every republish (or pass
-`--rev-version`).
-
-### Dev build alongside the released one
-
-`npm run publish:dev` uses `configs/dev.json` to publish a separate
-`tf-snag-tab-dev` extension id, so you can iterate without touching the version
-teams have installed.
+`npm run package` / `npm run package:dev` build a `.vsix` under `dist/` without
+publishing.
 
 ## Local iteration
 
