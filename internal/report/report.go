@@ -398,9 +398,11 @@ type junitSkipped struct {
 
 // WriteJUnit renders the drift list as a JUnit test suite: one failing test case
 // per resource changed outside Terraform, its attribute diffs in the failure
-// body. A clean report emits a single passing case so the Tests tab shows green
-// rather than "no results". Pending changes are not tests — they are context and
-// belong in the text/markdown/JSON output.
+// body. Suppressed drift is a skipped case under classname `tf-snag.ignored`
+// (live drift is `tf-snag.drift`), so the Tests tab groups the two apart and
+// shows Failed vs Skipped in the Outcome column. A clean report emits a single
+// passing case so the tab shows green rather than "no results". Pending changes
+// are context, not tests — they belong in the text/markdown/JSON output.
 func (r *Report) WriteJUnit(w io.Writer) error {
 	suite := junitSuite{Name: "tf-snag"}
 	drift, ignoredDrift := r.gatingDrift()
@@ -428,8 +430,8 @@ func (r *Report) WriteJUnit(w io.Writer) error {
 	for _, rr := range ignoredDrift {
 		suite.Cases = append(suite.Cases, junitCase{
 			Name:      rr.Address + moduleSuffix(rr.Module),
-			Classname: "tf-snag.drift",
-			Skipped:   &junitSkipped{Message: "ignored — " + reasonOr(rr.SuppressReason)},
+			Classname: "tf-snag.ignored",
+			Skipped:   &junitSkipped{Message: "ignored — " + reasonOr(rr.SuppressReason) + " [" + rr.SuppressSrc + "]"},
 		})
 	}
 	suite.Tests = len(suite.Cases)

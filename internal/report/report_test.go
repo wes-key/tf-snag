@@ -1127,4 +1127,7 @@ func TestWriteJUnitSkipsSuppressed(t *testing.T) {
 	if !strings.Contains(out, "<skipped") || !strings.Contains(out, "ignored — temp tag") {
 		t.Errorf("junit missing skipped case:\n%s", out)
 	}
+	if !strings.Contains(out, `classname="tf-snag.ignored"`) {
+		t.Errorf("suppressed case should sit under tf-snag.ignored:\n%s", out)
+	}
 }
