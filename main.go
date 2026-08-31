@@ -100,8 +100,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tf-snag:", err)
 		return 2
 	}
-	if deprOn && *format != "sarif" && *format != "text" {
-		fmt.Fprintln(stderr, "tf-snag: -check deprecations supports -format sarif or text only")
+	switch {
+	case !deprOn, *format == "sarif", *format == "text", *format == "markdown", *format == "md":
+		// deprecations are carried by these formats
+	default:
+		fmt.Fprintln(stderr, "tf-snag: -check deprecations supports -format sarif, text or markdown only")
 		return 2
 	}
 	if *planLogPath != "" && !deprOn {

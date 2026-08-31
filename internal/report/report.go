@@ -417,6 +417,9 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 		}
 		bw.printf("%s\n", line)
 	}
+	if r.HasDeprecations() {
+		bw.printf("🟡 **%d deprecation warning%s**\n", len(r.Deprecations), plural(len(r.Deprecations)))
+	}
 	meta := fmt.Sprintf("pending: %d to add, %d to change, %d to destroy", add, chg, del)
 	if r.TerraformVersion != "" {
 		meta = "Terraform " + r.TerraformVersion + " · " + meta
@@ -447,7 +450,38 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 		}
 	}
 
+	if r.HasDeprecations() {
+		bw.printf("\n### Deprecation warnings\n\n")
+		for _, d := range r.Deprecations {
+			head := "**" + mdText(d.Summary) + "**"
+			if d.Detail != "" {
+				head += " — " + mdText(clip(strings.ReplaceAll(d.Detail, "\n", " "), 300))
+			}
+			bw.printf("%s\n", head)
+			for _, s := range d.Sites {
+				bw.printf("%s\n", mdSite(s))
+			}
+			bw.printf("\n")
+		}
+	}
+
 	return bw.err
+}
+
+// mdSite renders a deprecation site as a Markdown list item.
+func mdSite(s DeprecationSite) string {
+	loc := s.File
+	if s.File != "" && s.Line > 0 {
+		loc = fmt.Sprintf("%s:%d", s.File, s.Line)
+	}
+	switch {
+	case s.Address != "" && loc != "":
+		return "- `" + mdText(s.Address) + "` _(" + mdText(loc) + ")_"
+	case s.Address != "":
+		return "- `" + mdText(s.Address) + "`"
+	default:
+		return "- `" + mdText(loc) + "`"
+	}
 }
 
 func plural(n int) string {

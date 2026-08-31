@@ -74,8 +74,9 @@ tf-snag -plan plan.json [flags]
 `-check deprecations` reads the newline-delimited JSON that `terraform plan
 -json` writes (not the `terraform show -json` plan representation, which carries
 no diagnostics) and reports the deprecation warnings in it. It supports `-format
-sarif` and `-format text` only. `-check all` runs both analyses; drift then reads
-`-plan` and deprecations read `-plan-log` (only one may come from stdin).
+sarif`, `-format text` and `-format markdown`. `-check all` runs both analyses;
+drift then reads `-plan` and deprecations read `-plan-log` (only one may come
+from stdin).
 
 `-color=auto` colours the `text` output when stdout is a terminal (and
 `NO_COLOR` is unset); Azure DevOps logs render ANSI, so the pipeline passes
@@ -92,7 +93,9 @@ Formats: `text` for humans/console, `json` for the run-tab extension (carries a
 created/destroyed outside Terraform are summarised in one line rather than
 diffed attribute-by-attribute against null. Pending changes appear in `text`,
 `json` and `markdown` only. Deprecations (`-check deprecations`) appear in
-`sarif` and `text` only — `json`/`markdown`/`junit` do not carry them yet.
+`sarif`, `text` and `markdown` — the Summary-tab markdown is the fallback when
+the "SARIF SAST Scans Tab" extension is not installed. `json`/`junit` do not
+carry deprecations yet.
 
 The `sarif` output is one flat result per drifted resource:
 
@@ -173,10 +176,11 @@ alongside the plan file to feed the deprecation check:
 - script: |
     terraform -chdir=terraform plan -out tfplan -json | tee plan.jsonl
     terraform -chdir=terraform show -json tfplan > plan.json
-    ./tf-snag -plan plan.json -format json     -exit-code=false > tf-snag.json
-    ./tf-snag -plan plan.json -format markdown  -exit-code=false > tf-snag.md
+    ./tf-snag -plan plan.json -format json -exit-code=false > tf-snag.json
     # -plan-log-dir terraform: plan ran with -chdir=terraform, so its diagnostic
-    # paths are relative to terraform/ — prepend it for working Scans links.
+    # paths are relative to terraform/ — prepend it for working links.
+    ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
+      -format markdown -exit-code=false > tf-snag.md
     ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
       -format sarif -source "$(Build.SourcesDirectory)" -exit-code=false > tf-snag.sarif
     echo "##vso[task.addattachment type=tf-snag.report;name=tf-snag;]$PWD/tf-snag.json"

@@ -247,8 +247,24 @@ func TestRunDeprecationsRejectsJSONFormat(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	if !strings.Contains(errb.String(), "sarif or text") {
+	if !strings.Contains(errb.String(), "sarif, text or markdown") {
 		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+func TestRunDeprecationsMarkdown(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-check", "all", "-plan", "testdata/plan-drift.json",
+		"-plan-log", "testdata/plan-log-deprecations.jsonl", "-format", "markdown"},
+		strings.NewReader(""), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	s := out.String()
+	for _, want := range []string{"deprecation warning", "### Deprecation warnings", "Argument is deprecated"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("markdown missing %q\n---\n%s", want, s)
+		}
 	}
 }
 

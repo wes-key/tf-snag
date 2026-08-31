@@ -241,6 +241,34 @@ func TestWriteMarkdownShowsDriftAndPending(t *testing.T) {
 	}
 }
 
+func TestWriteMarkdownShowsDeprecations(t *testing.T) {
+	r := Build(&plan.Plan{TerraformVersion: "1.9.6"})
+	r.Deprecations = []Deprecation{{
+		Severity: "warning", Summary: "Argument is deprecated", Detail: `Use "live_trace" instead.`,
+		Sites: []DeprecationSite{
+			{Address: "azurerm_signalr_service.a", File: "terraform/main.tf", Line: 46},
+			{Address: "azurerm_signalr_service.b", File: "terraform/main.tf", Line: 59},
+		},
+	}}
+	var buf bytes.Buffer
+	if err := r.WriteMarkdown(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"🟢 **No drift detected**",
+		"🟡 **1 deprecation warning**",
+		"### Deprecation warnings",
+		`**Argument is deprecated** — Use "live_trace" instead.`,
+		"- `azurerm_signalr_service.a` _(terraform/main.tf:46)_",
+		"- `azurerm_signalr_service.b` _(terraform/main.tf:59)_",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("markdown missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
 func TestWriteMarkdownNeutralisesBacktick(t *testing.T) {
 	p := &plan.Plan{
 		TerraformVersion: "1.9.6",
