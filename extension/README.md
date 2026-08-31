@@ -1,19 +1,28 @@
-# tf-snag drift report — Azure DevOps tab
+# tf-snag — Azure DevOps run tab
 
-Adds a **Drift** tab to the pipeline run summary (next to Tests, Code Coverage,
+Adds a **tf-snag** tab to the pipeline run summary (next to Tests, Code Coverage,
 Trivy, Mend, …) that renders the report produced by the
 [`tf-snag`](../README.md) CLI:
 
 - resources Terraform found changed **outside** Terraform, with the exact
   attribute diffs (`min_tls_version: "TLS1_2" → "TLS1_0"`);
+- deprecation warnings from the plan, with their source locations;
+- findings suppressed by an ignore rule, under an **Ignored** section
+  (reason + rule);
+- per-finding **first seen** provenance when the pipeline passes `-baseline`
+  (a "new" pill, or a date + age);
 - pending changes from configuration, for context;
 - a status banner and an add/change/destroy tally.
+
+The tab follows the org's light/dark theme.
 
 ## How it works
 
 ```
 tf-snag.yml step:
-  tf-snag -plan plan.json -format json -exit-code=false > tf-snag.json
+  tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
+    -source "$(Build.SourcesDirectory)" [-baseline prev/tf-snag.sarif] \
+    -format json -exit-code=false > tf-snag.json
   echo "##vso[task.addattachment type=tf-snag.report;name=tf-snag;]tf-snag.json"
 
 this extension:
@@ -24,7 +33,7 @@ this extension:
 No custom pipeline task — it reads a run **attachment**, so any job that
 publishes one of type `tf-snag.report` lights up the tab. The JSON shape is
 owned by `internal/report/report.go`; `report.schema` is the contract version
-(`SCHEMA_SUPPORTED` in `tab/drift.js`).
+(`SCHEMA_SUPPORTED` in `tab/drift.js`, currently **2**).
 
 ## Build
 
@@ -92,9 +101,11 @@ needs a real build attachment and the `VSS` host). For quick DOM/CSS work, open
 
 1. Run **`tf-snag.yml`**. Confirm the drift step logs
    `##vso[task.addattachment …type=tf-snag.report…]`.
-2. Open the run → **Drift** tab.
-   - drift present → amber banner + the "Changed outside Terraform" table,
-     rows expandable to attribute diffs;
-   - no drift → green banner, both tables show their empty state;
-   - no attachment (e.g. the plan step failed first) → neutral "No drift
+2. Open the run → **tf-snag** tab.
+   - findings present → amber banner + "Changed outside Terraform" (rows
+     expandable to attribute diffs), "Deprecations", and — when an ignore rule
+     matched — an "Ignored" table;
+   - `-baseline` given → each row shows a "new" pill or a "first seen …" note;
+   - nothing → green banner, sections show their empty state;
+   - no attachment (e.g. the plan step failed first) → neutral "No tf-snag
      report for this run".

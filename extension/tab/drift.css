@@ -1,18 +1,46 @@
+/* Theme-aware: with VSS.init({ applyTheme: true }) the host injects
+   --background-color / --text-*-color / --border-*-color from the *Azure DevOps*
+   theme, so text, surfaces and borders follow the user's light/dark choice.
+   The semantic add/delete hues aren't host-provided, so those lean on
+   prefers-color-scheme (OS/browser) as a best effort. */
 :root {
-  --tfd-border: rgba(128, 128, 128, 0.3);
-  --tfd-muted: #6b6b6b;
-  --tfd-ok-bg: rgba(16, 124, 16, 0.1);
-  --tfd-ok-bd: rgba(16, 124, 16, 0.5);
-  --tfd-warn-bg: rgba(202, 80, 16, 0.1);
-  --tfd-warn-bd: rgba(202, 80, 16, 0.5);
-  --tfd-err-bg: rgba(168, 0, 0, 0.1);
-  --tfd-err-bd: rgba(168, 0, 0, 0.5);
-  --tfd-hover: rgba(128, 128, 128, 0.08);
+  --tfd-bg: var(--background-color, #ffffff);
+  --tfd-fg: var(--text-primary-color, #201f1e);
+  --tfd-muted: var(--text-secondary-color, #605e5c);
+  --tfd-border: var(--border-subtle-color, rgba(128, 128, 128, 0.3));
+  --tfd-hover: rgba(128, 128, 128, 0.09);
+  --tfd-accent: var(--communication-foreground, #0067b8);
+
+  --tfd-ok-bg: rgba(16, 124, 16, 0.12);
+  --tfd-ok-bd: #2aa52a;
+  --tfd-warn-bg: rgba(202, 128, 16, 0.14);
+  --tfd-warn-bd: #d68f1c;
+  --tfd-err-bg: rgba(200, 40, 40, 0.12);
+  --tfd-err-bd: #e04a4a;
+  --tfd-info-bg: rgba(0, 103, 184, 0.10);
+  --tfd-info-bd: #3b8ce2;
+
+  --tfd-add: #107c10;
+  --tfd-del: #c50f1f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --tfd-hover: rgba(255, 255, 255, 0.06);
+    --tfd-add: #4ec94e;
+    --tfd-del: #ff8a8a;
+    --tfd-ok-bg: rgba(78, 201, 78, 0.13);
+    --tfd-warn-bg: rgba(214, 143, 28, 0.16);
+    --tfd-err-bg: rgba(255, 138, 138, 0.12);
+    --tfd-info-bg: rgba(90, 170, 255, 0.13);
+  }
 }
 
 .tfd-root {
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   padding: 12px 16px 24px;
+  background: var(--tfd-bg);
+  color: var(--tfd-fg);
 }
 
 .tfd-muted { color: var(--tfd-muted); }
@@ -27,8 +55,14 @@
 .tfd-banner-ok { background: var(--tfd-ok-bg); border-left-color: var(--tfd-ok-bd); }
 .tfd-banner-warn { background: var(--tfd-warn-bg); border-left-color: var(--tfd-warn-bd); }
 .tfd-banner-error { background: var(--tfd-err-bg); border-left-color: var(--tfd-err-bd); }
+.tfd-banner-info { background: var(--tfd-info-bg); border-left-color: var(--tfd-info-bd); }
 .tfd-banner strong { display: block; font-size: 14px; }
 .tfd-banner .tfd-muted { margin-top: 2px; }
+
+/* a banner sitting inside a section (below its h3) sits tighter than the
+   top-of-page status banner */
+.tfd-section > .tfd-banner { margin-bottom: 10px; }
+.tfd-section > .tfd-banner strong { font-size: 13px; }
 
 .tfd-section { margin-bottom: 22px; }
 .tfd-h3 {
@@ -63,10 +97,10 @@
   border-bottom-width: 2px;
 }
 .tfd-col-sign { width: 20px; text-align: center; font-weight: 700; }
-.tfd-sign-create { color: #107c10; }
-.tfd-sign-update { color: #ca5010; }
-.tfd-sign-delete { color: #a80000; }
-.tfd-sign-replace { color: #a80000; }
+.tfd-sign-create { color: var(--tfd-add); }
+.tfd-sign-update { color: var(--tfd-warn-bd); }
+.tfd-sign-delete { color: var(--tfd-del); }
+.tfd-sign-replace { color: var(--tfd-del); }
 
 .tfd-row-x { cursor: pointer; }
 .tfd-row-x:hover { background: var(--tfd-hover); }
@@ -88,5 +122,37 @@
 }
 .tfd-attrs th { color: var(--tfd-muted); font-weight: 600; }
 .tfd-attrs code { word-break: break-all; }
-.tfd-old { color: #a80000; }
-.tfd-new { color: #107c10; }
+.tfd-old { color: var(--tfd-del); }
+.tfd-new { color: var(--tfd-add); }
+
+/* provenance pill */
+.tfd-pill {
+  display: inline-block;
+  padding: 0 7px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 17px;
+}
+.tfd-pill-new { background: var(--tfd-accent); color: #ffffff; }
+
+/* deprecations */
+.tfd-depr {
+  border: 1px solid var(--tfd-border);
+  border-left: 3px solid var(--tfd-warn-bd);
+  border-radius: 3px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+}
+.tfd-depr-hd { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+.tfd-depr-hd strong { font-size: 13px; }
+.tfd-sev { color: var(--tfd-warn-bd); font-weight: 700; margin-right: 6px; }
+.tfd-sev-error { color: var(--tfd-err-bd); }
+.tfd-depr-detail { color: var(--tfd-muted); white-space: pre-line; margin-top: 3px; }
+.tfd-depr-sites { margin: 6px 0 0; padding: 0; list-style: none; }
+.tfd-depr-sites li { font-size: 12px; }
+.tfd-depr-sites code { word-break: break-all; }
+
+/* ignored table */
+.tfd-ignored td { color: var(--tfd-muted); }
+.tfd-ignored code { color: var(--tfd-fg); }

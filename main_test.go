@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"runtime"
 	"strings"
@@ -240,15 +241,42 @@ func TestRunDeprecationsCleanExitsZero(t *testing.T) {
 	}
 }
 
-func TestRunDeprecationsRejectsJSONFormat(t *testing.T) {
+func TestRunDeprecationsRejectsJUnitFormat(t *testing.T) {
 	var out, errb bytes.Buffer
-	code := run([]string{"-check", "deprecations", "-plan-log", "testdata/plan-log-clean.jsonl", "-format", "json"},
+	code := run([]string{"-check", "deprecations", "-plan-log", "testdata/plan-log-clean.jsonl", "-format", "junit"},
 		strings.NewReader(""), &out, &errb)
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	if !strings.Contains(errb.String(), "sarif, text or markdown") {
+	if !strings.Contains(errb.String(), "sarif, json, text or markdown") {
 		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+// -check deprecations -format json is now allowed (schema 2 carries them); the
+// tf-snag extension consumes it.
+func TestRunDeprecationsJSON(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-check", "all", "-plan", "testdata/plan-drift.json",
+		"-plan-log", "testdata/plan-log-deprecations.jsonl", "-format", "json"},
+		strings.NewReader(""), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errb.String())
+	}
+	var doc struct {
+		Schema       int `json:"schema"`
+		Deprecations []struct {
+			Summary string `json:"summary"`
+		} `json:"deprecations"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("output not JSON: %v\n%s", err, out.String())
+	}
+	if doc.Schema != 2 {
+		t.Errorf("schema = %d, want 2", doc.Schema)
+	}
+	if len(doc.Deprecations) == 0 {
+		t.Errorf("deprecations not carried in JSON: %s", out.String())
 	}
 }
 
