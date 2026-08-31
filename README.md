@@ -65,6 +65,8 @@ tf-snag -plan plan.json [flags]
   -color string       colorize text output: auto | always | never (default "auto")
   -source dir         Terraform source dir; sarif locations link to the .tf
                       declaring each resource (best effort, first match wins)
+  -baseline file      previous run's tf-snag.sarif; with -format sarif, stamps
+                      each result new / updated / absent
   -exit-code          exit 2 when drift or a deprecation is detected (default true)
   -version            print version and exit
 ```
@@ -72,8 +74,9 @@ tf-snag -plan plan.json [flags]
 `-check deprecations` reads the newline-delimited JSON that `terraform plan
 -json` writes (not the `terraform show -json` plan representation, which carries
 no diagnostics) and reports the deprecation warnings in it. It supports `-format
-sarif` and `-format text` only. `-check all` runs both analyses; drift then reads
-`-plan` and deprecations read `-plan-log` (only one may come from stdin).
+sarif`, `-format text` and `-format markdown`. `-check all` runs both analyses;
+drift then reads `-plan` and deprecations read `-plan-log` (only one may come
+from stdin).
 
 `-color=auto` colours the `text` output when stdout is a terminal (and
 `NO_COLOR` is unset); Azure DevOps logs render ANSI, so the pipeline passes
@@ -90,7 +93,9 @@ Formats: `text` for humans/console, `json` for the run-tab extension (carries a
 created/destroyed outside Terraform are summarised in one line rather than
 diffed attribute-by-attribute against null. Pending changes appear in `text`,
 `json` and `markdown` only. Deprecations (`-check deprecations`) appear in
-`sarif` and `text` only — `json`/`markdown`/`junit` do not carry them yet.
+`sarif`, `text` and `markdown` — the Summary-tab markdown is the fallback when
+the "SARIF SAST Scans Tab" extension is not installed. `json`/`junit` do not
+carry deprecations yet.
 
 The `sarif` output is one flat result per drifted resource:
 
@@ -99,7 +104,32 @@ The `sarif` output is one flat result per drifted resource:
 | severity icon | `level` | ⛔ delete/create · ⚠ update |
 | Result | `message` | `Deleted — name=kv01` · `Updated — tags.Owner: null → "Wes"` |
 | Path (link) | `physicalLocation` (needs `-source`) | `terraform/modules/kv/main.tf` |
-| Baseline | `baselineState` | `absent` · `updated` · `new` |
+| Baseline | `baselineState` | `New` unless `-baseline` is given — see below |
+
+Every result carries a deterministic `guid` (RFC 4122 v5 of the finding's kind +
+identity) and a `partialFingerprints` entry (`driftAddress/v1`,
+`deprecation/v1`). Pass **`-baseline <previous run's tf-snag.sarif>`** and
+tf-snag diffs against it — matching on `guid` — and stamps each result:
+
+- `new` — not in the previous run
+- `updated` — was also in the previous run (whether or not its message changed)
+- `absent` — in the previous run, gone now (drift remediated, deprecation fixed);
+  re-emitted as its own result
+
+`unchanged` is deliberately never emitted: the Azure DevOps Scans tab's default
+Baseline filter is `new` / `updated` / `absent`, so an `unchanged` result would
+just vanish while the drift is still live. `updated` covers everything carried
+over.
+
+Each baselined result also gets `provenance.firstDetectionTimeUtc` — forwarded
+from the matched prior result, or "now" for a new one — and, since that tab has
+no Age column, the first line of the message ends with a
+`(first seen <date>, <n> days ago)` note, e.g. `Argument is deprecated (first
+seen 2026-08-10, 20 days ago)`. The date is only accurate from the second
+baselined run on (the first has no prior timestamp to carry).
+
+Without `-baseline`, `baselineState` and `provenance` are left unset and the
+Scans tab shows every row as `New`.
 
 Drift results share one rule, `resource-drift`; the kind (`Deleted` / `Updated`
 / `Created`) leads the message. No glyph on it — the severity icon in column 0
@@ -146,10 +176,11 @@ alongside the plan file to feed the deprecation check:
 - script: |
     terraform -chdir=terraform plan -out tfplan -json | tee plan.jsonl
     terraform -chdir=terraform show -json tfplan > plan.json
-    ./tf-snag -plan plan.json -format json     -exit-code=false > tf-snag.json
-    ./tf-snag -plan plan.json -format markdown  -exit-code=false > tf-snag.md
+    ./tf-snag -plan plan.json -format json -exit-code=false > tf-snag.json
     # -plan-log-dir terraform: plan ran with -chdir=terraform, so its diagnostic
-    # paths are relative to terraform/ — prepend it for working Scans links.
+    # paths are relative to terraform/ — prepend it for working links.
+    ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
+      -format markdown -exit-code=false > tf-snag.md
     ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
       -format sarif -source "$(Build.SourcesDirectory)" -exit-code=false > tf-snag.sarif
     echo "##vso[task.addattachment type=tf-snag.report;name=tf-snag;]$PWD/tf-snag.json"
