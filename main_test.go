@@ -316,3 +316,44 @@ func TestRunDefaultCheckIsDrift(t *testing.T) {
 		t.Errorf("plain drift run should have no deprecation results\n%s", s)
 	}
 }
+
+func TestRunIgnoreFileSuppressesDrift(t *testing.T) {
+	var out, errb bytes.Buffer
+	// tf-snag-ignore.yml ignores azurerm_storage_account.data (the only real drift).
+	code := run([]string{"-plan", "testdata/plan-drift.json", "-format", "sarif",
+		"-ignore", "testdata/tf-snag-ignore.yml"}, strings.NewReader(""), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (all drift suppressed) — stderr: %s", code, errb.String())
+	}
+	s := out.String()
+	if !strings.Contains(s, `"suppressions"`) || !strings.Contains(s, `"kind": "external"`) {
+		t.Errorf("sarif missing suppression on the ignored result:\n%s", s)
+	}
+}
+
+func TestRunIgnoreFileBadPath(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-plan", "testdata/plan-drift.json", "-ignore", "testdata/nope.yml"},
+		strings.NewReader(""), &out, &errb)
+	if code != 2 || errb.Len() == 0 {
+		t.Errorf("exit=%d stderr=%q, want 2 + an error", code, errb.String())
+	}
+}
+
+func TestRunInlineIgnoreViaSource(t *testing.T) {
+	// A plan whose only drift is on azurerm_role_assignment, which
+	// testdata/tfsrc/main.tf marks `# tf-snag:ignore-drift`.
+	plan := `{"format_version":"1.2","terraform_version":"1.9.6","resource_drift":[` +
+		`{"address":"module.rbac.azurerm_role_assignment.admin[0]","type":"azurerm_role_assignment",` +
+		`"change":{"actions":["update"],"before":{"role":"Reader"},"after":{"role":"Owner"}}}],` +
+		`"resource_changes":[]}`
+	var out, errb bytes.Buffer
+	code := run([]string{"-format", "text", "-source", "testdata/tfsrc"}, strings.NewReader(plan), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (inline-ignored) — stderr: %s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "ignored: 1 drift") ||
+		!strings.Contains(out.String(), "managed by PIM") {
+		t.Errorf("text missing inline-ignored section:\n%s", out.String())
+	}
+}

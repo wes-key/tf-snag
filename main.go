@@ -19,6 +19,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/wes-key/tf-snag/internal/ignore"
 	"github.com/wes-key/tf-snag/internal/plan"
 	"github.com/wes-key/tf-snag/internal/report"
 )
@@ -80,6 +81,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	color := fs.String("color", "auto", "colorize text output: auto, always or never")
 	source := fs.String("source", "", "Terraform source `dir`; when set, sarif locations link to the .tf file declaring each resource")
 	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif` then stamps each result new/updated/absent")
+	ignorePath := fs.String("ignore", "", "tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd or -source); suppressed findings stay in the report but do not trip -exit-code")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: terraform show -json PLANFILE | tf-snag [flags]")
@@ -187,6 +189,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		rep.Deprecations = report.Deprecations(diags)
 	}
 
+	if code := applyIgnores(rep, *ignorePath, *source, stderr); code != 0 {
+		return code
+	}
+
 	switch *format {
 	case "text":
 		if useColor {
@@ -232,10 +238,61 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if *exitCode && (rep.HasDrift() || rep.HasDeprecations()) {
+	if *exitCode && rep.HasGatingFindings() {
 		return 2
 	}
 	return 0
+}
+
+// applyIgnores loads the ignore file (explicit -ignore, else an auto-discovered
+// .tf-snag-ignore.yml) and inline .tf comments (when -source is set), and marks
+// matching findings suppressed. Returns a non-zero exit code on a hard error.
+func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Writer) int {
+	set := &ignore.Set{}
+
+	path := ignorePath
+	if path == "" {
+		path = discoverIgnore(source)
+	}
+	s, err := ignore.LoadFile(path)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	set.Merge(s)
+
+	if source != "" {
+		s, err := ignore.FromSource(source)
+		if err != nil {
+			fmt.Fprintln(stderr, "tf-snag:", err)
+			return 2
+		}
+		set.Merge(s)
+	}
+
+	set.Apply(rep)
+	return 0
+}
+
+// discoverIgnore returns the first existing .tf-snag-ignore.yml (or .yaml) in
+// the cwd or the -source root, else "".
+func discoverIgnore(source string) string {
+	var dirs []string
+	if wd, err := os.Getwd(); err == nil {
+		dirs = append(dirs, wd)
+	}
+	if source != "" {
+		dirs = append(dirs, source)
+	}
+	for _, d := range dirs {
+		for _, name := range []string{".tf-snag-ignore.yml", ".tf-snag-ignore.yaml"} {
+			p := filepath.Join(d, name)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+	return ""
 }
 
 // parseChecks turns the -check value into the set of analyses to run.

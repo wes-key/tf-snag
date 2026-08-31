@@ -437,6 +437,10 @@ type sarifDoc struct {
 			Provenance          *struct {
 				FirstDetectionTimeUtc string `json:"firstDetectionTimeUtc"`
 			} `json:"provenance"`
+			Suppressions []struct {
+				Kind          string `json:"kind"`
+				Justification string `json:"justification"`
+			} `json:"suppressions"`
 			Properties map[string]string `json:"properties"`
 		} `json:"results"`
 	} `json:"runs"`
@@ -1010,5 +1014,120 @@ func TestParsePriorSARIFRejectsGarbage(t *testing.T) {
 	pr, err := ParsePriorSARIF([]byte(`{"version":"2.1.0","runs":[]}`))
 	if err != nil || pr == nil {
 		t.Fatalf("empty runs should parse cleanly: %v", err)
+	}
+}
+
+// --- suppression / ignore -------------------------------------------------
+
+func suppressedReport() *Report {
+	r := &Report{
+		Schema: ReportSchema,
+		Drift: []ResourceReport{
+			{Address: "azurerm_storage_account.data", Action: "update",
+				Attrs:      []plan.AttrDiff{{Path: "min_tls_version", Old: "TLS1_2", New: "TLS1_0"}},
+				Suppressed: true, SuppressReason: "temp tag — JIRA-1", SuppressSrc: ".tf-snag-ignore.yml", SuppressKind: "external"},
+			{Address: "azurerm_key_vault.vault", Action: "delete", Identity: "name=kv"},
+		},
+		Deprecations: []Deprecation{
+			{Severity: "warning", Summary: "Argument is deprecated", Detail: "use bar",
+				Sites:      []DeprecationSite{{Address: "azurerm_x.y", File: "main.tf", Line: 3}},
+				Suppressed: true, SuppressReason: "4.0 backlog", SuppressSrc: "main.tf:2", SuppressKind: "inSource"},
+			{Severity: "warning", Summary: "Deprecated attribute",
+				Sites: []DeprecationSite{{Address: "azurerm_p.q"}}},
+		},
+	}
+	return r
+}
+
+func TestHasGatingFindings(t *testing.T) {
+	r := suppressedReport()
+	if !r.HasGatingFindings() {
+		t.Fatal("key_vault drift + Deprecated attribute should gate")
+	}
+	// suppress the two that still gate
+	r.Drift[1].Suppressed = true
+	r.Deprecations[1].Suppressed = true
+	if r.HasGatingFindings() {
+		t.Error("all suppressed -> no gating findings")
+	}
+}
+
+func TestWriteSARIFSuppressions(t *testing.T) {
+	var buf bytes.Buffer
+	if err := suppressedReport().WriteSARIF(&buf, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	var got []struct{ kind, just string }
+	for _, res := range parseSARIF(t, buf.Bytes()).Runs[0].Results {
+		if len(res.Suppressions) == 1 {
+			got = append(got, struct{ kind, just string }{res.Suppressions[0].Kind, res.Suppressions[0].Justification})
+		}
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 suppressed results, got %d", len(got))
+	}
+	kinds := got[0].kind + "," + got[1].kind
+	if !strings.Contains(kinds, "external") || !strings.Contains(kinds, "inSource") {
+		t.Errorf("suppression kinds = %q", kinds)
+	}
+}
+
+func TestWriteTextIgnoredSection(t *testing.T) {
+	var buf bytes.Buffer
+	if err := suppressedReport().WriteText(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"tf-snag — 1 resource(s) changed outside Terraform", // only the un-suppressed key_vault
+		"deprecation warning(s): 1",                         // only "Deprecated attribute"
+		"ignored: 1 drift, 1 deprecation(s)",
+		"azurerm_storage_account.data — temp tag — JIRA-1 [.tf-snag-ignore.yml]",
+		"Argument is deprecated — 4.0 backlog [main.tf:2]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("text missing %q\n---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "min_tls_version") {
+		t.Errorf("suppressed drift's attrs leaked into the main section:\n%s", out)
+	}
+}
+
+func TestWriteMarkdownIgnoredTable(t *testing.T) {
+	var buf bytes.Buffer
+	if err := suppressedReport().WriteMarkdown(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"🔴 **1 resource changed outside Terraform**",
+		"🟡 **1 deprecation warning**",
+		"🔕 **2 ignored**",
+		"### Ignored",
+		"| Item | Reason | Rule |",
+		"| `azurerm_storage_account.data` | temp tag — JIRA-1 | `.tf-snag-ignore.yml` |",
+		"| Argument is deprecated | 4.0 backlog | `main.tf:2` |",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("markdown missing %q\n---\n%s", want, out)
+		}
+	}
+}
+
+func TestWriteJUnitSkipsSuppressed(t *testing.T) {
+	var buf bytes.Buffer
+	if err := suppressedReport().WriteJUnit(&buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `failures="1"`) || !strings.Contains(out, `skipped="1"`) {
+		t.Errorf("junit counts wrong:\n%s", out)
+	}
+	if !strings.Contains(out, "<skipped") || !strings.Contains(out, "ignored — temp tag") {
+		t.Errorf("junit missing skipped case:\n%s", out)
+	}
+	if !strings.Contains(out, `classname="tf-snag.ignored"`) {
+		t.Errorf("suppressed case should sit under tf-snag.ignored:\n%s", out)
 	}
 }

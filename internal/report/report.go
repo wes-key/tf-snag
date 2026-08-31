@@ -40,6 +40,11 @@ type Deprecation struct {
 	Summary  string            `json:"summary"`
 	Detail   string            `json:"detail,omitempty"`
 	Sites    []DeprecationSite `json:"sites,omitempty"`
+
+	Suppressed     bool   `json:"suppressed,omitempty"`
+	SuppressReason string `json:"suppress_reason,omitempty"`
+	SuppressSrc    string `json:"suppress_source,omitempty"` // where the rule came from
+	SuppressKind   string `json:"-"`                         // "inSource" | "external" — SARIF only
 }
 
 // DeprecationSite is one place a deprecation fires — a resource address and,
@@ -87,6 +92,11 @@ type ResourceReport struct {
 	Action   string          `json:"action"`
 	Identity string          `json:"identity,omitempty"`
 	Attrs    []plan.AttrDiff `json:"attributes,omitempty"`
+
+	Suppressed     bool   `json:"suppressed,omitempty"`
+	SuppressReason string `json:"suppress_reason,omitempty"`
+	SuppressSrc    string `json:"suppress_source,omitempty"` // where the rule came from
+	SuppressKind   string `json:"-"`                         // "inSource" | "external" — SARIF only
 }
 
 // SourceLoc is where a resource is declared in the Terraform source, used to
@@ -162,6 +172,46 @@ func (r *Report) HasDrift() bool { return len(r.Drift) > 0 }
 
 // HasDeprecations reports whether the plan raised any deprecation warning.
 func (r *Report) HasDeprecations() bool { return len(r.Deprecations) > 0 }
+
+// HasGatingFindings reports whether any un-suppressed drift or deprecation was
+// found — the set the -exit-code gate cares about.
+func (r *Report) HasGatingFindings() bool {
+	for i := range r.Drift {
+		if !r.Drift[i].Suppressed {
+			return true
+		}
+	}
+	for i := range r.Deprecations {
+		if !r.Deprecations[i].Suppressed {
+			return true
+		}
+	}
+	return false
+}
+
+// gatingDrift / gatingDeprecations return the findings that count toward the
+// gate; suppressed ones are split out for the "ignored" sections.
+func (r *Report) gatingDrift() (gating, ignored []ResourceReport) {
+	for _, rr := range r.Drift {
+		if rr.Suppressed {
+			ignored = append(ignored, rr)
+		} else {
+			gating = append(gating, rr)
+		}
+	}
+	return
+}
+
+func (r *Report) gatingDeprecations() (gating, ignored []Deprecation) {
+	for _, d := range r.Deprecations {
+		if d.Suppressed {
+			ignored = append(ignored, d)
+		} else {
+			gating = append(gating, d)
+		}
+	}
+	return
+}
 
 // Deprecations filters plan diagnostics to deprecation notices and collapses
 // them: one entry per distinct summary+detail, carrying every source location
@@ -334,6 +384,7 @@ type junitCase struct {
 	Name      string        `xml:"name,attr"`
 	Classname string        `xml:"classname,attr"`
 	Failure   *junitFailure `xml:"failure,omitempty"`
+	Skipped   *junitSkipped `xml:"skipped,omitempty"`
 }
 
 type junitFailure struct {
@@ -341,21 +392,28 @@ type junitFailure struct {
 	Body    string `xml:",chardata"`
 }
 
+type junitSkipped struct {
+	Message string `xml:"message,attr"`
+}
+
 // WriteJUnit renders the drift list as a JUnit test suite: one failing test case
 // per resource changed outside Terraform, its attribute diffs in the failure
-// body. A clean report emits a single passing case so the Tests tab shows green
-// rather than "no results". Pending changes are not tests — they are context and
-// belong in the text/markdown/JSON output.
+// body. Suppressed drift is a skipped case under classname `tf-snag.ignored`
+// (live drift is `tf-snag.drift`), so the Tests tab groups the two apart and
+// shows Failed vs Skipped in the Outcome column. A clean report emits a single
+// passing case so the tab shows green rather than "no results". Pending changes
+// are context, not tests — they belong in the text/markdown/JSON output.
 func (r *Report) WriteJUnit(w io.Writer) error {
 	suite := junitSuite{Name: "tf-snag"}
+	drift, ignoredDrift := r.gatingDrift()
 
-	if len(r.Drift) == 0 {
+	if len(drift) == 0 {
 		suite.Cases = append(suite.Cases, junitCase{
 			Name:      "no drift detected",
 			Classname: "tf-snag",
 		})
 	}
-	for _, rr := range r.Drift {
+	for _, rr := range drift {
 		body := attrLines(rr.Attrs)
 		if body == "" {
 			body = rr.summaryLine()
@@ -369,8 +427,16 @@ func (r *Report) WriteJUnit(w io.Writer) error {
 			},
 		})
 	}
+	for _, rr := range ignoredDrift {
+		suite.Cases = append(suite.Cases, junitCase{
+			Name:      rr.Address + moduleSuffix(rr.Module),
+			Classname: "tf-snag.ignored",
+			Skipped:   &junitSkipped{Message: "ignored — " + reasonOr(rr.SuppressReason) + " [" + rr.SuppressSrc + "]"},
+		})
+	}
 	suite.Tests = len(suite.Cases)
-	suite.Failures = len(r.Drift)
+	suite.Failures = len(drift)
+	suite.Skipped = len(ignoredDrift)
 
 	if _, err := io.WriteString(w, xml.Header); err != nil {
 		return err
@@ -405,20 +471,25 @@ func attrLines(attrs []plan.AttrDiff) string {
 func (r *Report) WriteMarkdown(w io.Writer) error {
 	bw := &errWriter{w: w}
 	add, chg, del := tally(r.Pending)
+	drift, ignoredDrift := r.gatingDrift()
+	depr, ignoredDepr := r.gatingDeprecations()
 
 	// No leading "## tf-snag" — Azure DevOps already titles the summary
 	// section from the attachment filename, so a heading here doubles it up.
-	if len(r.Drift) == 0 {
+	if len(drift) == 0 {
 		bw.printf("🟢 **No drift detected**\n")
 	} else {
-		line := fmt.Sprintf("🔴 **%d resource%s changed outside Terraform**", len(r.Drift), plural(len(r.Drift)))
-		if b := driftBreakdown(r.Drift); b != "" {
+		line := fmt.Sprintf("🔴 **%d resource%s changed outside Terraform**", len(drift), plural(len(drift)))
+		if b := driftBreakdown(drift); b != "" {
 			line += " — " + b
 		}
 		bw.printf("%s\n", line)
 	}
-	if r.HasDeprecations() {
-		bw.printf("🟡 **%d deprecation warning%s**\n", len(r.Deprecations), plural(len(r.Deprecations)))
+	if len(depr) > 0 {
+		bw.printf("🟡 **%d deprecation warning%s**\n", len(depr), plural(len(depr)))
+	}
+	if n := len(ignoredDrift) + len(ignoredDepr); n > 0 {
+		bw.printf("🔕 **%d ignored**\n", n)
 	}
 	meta := fmt.Sprintf("pending: %d to add, %d to change, %d to destroy", add, chg, del)
 	if r.TerraformVersion != "" {
@@ -426,10 +497,10 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 	}
 	bw.printf("\n_%s_\n", meta)
 
-	if len(r.Drift) > 0 {
+	if len(drift) > 0 {
 		bw.printf("\n### Changed outside Terraform\n\n")
 		bw.printf("| Resource | Attribute | Change |\n|---|---|---|\n")
-		for _, rr := range r.Drift {
+		for _, rr := range drift {
 			res := "`" + mdCell(rr.Address) + "`"
 			if rr.Module != "" {
 				res += " _(" + mdCell(rr.Module) + ")_"
@@ -453,10 +524,10 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 		}
 	}
 
-	if r.HasDeprecations() {
+	if len(depr) > 0 {
 		bw.printf("\n### Deprecation warnings\n\n")
 		bw.printf("| Deprecation | Resources |\n|---|---|\n")
-		for _, d := range r.Deprecations {
+		for _, d := range depr {
 			dep := "**" + mdCell(d.Summary) + "**"
 			if d.Detail != "" {
 				dep += " — " + mdCell(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200))
@@ -466,6 +537,19 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 				sites[i] = mdSiteCell(s)
 			}
 			bw.printf("| %s | %s |\n", dep, strings.Join(sites, ", "))
+		}
+	}
+
+	if len(ignoredDrift) > 0 || len(ignoredDepr) > 0 {
+		bw.printf("\n### Ignored\n\n")
+		bw.printf("| Item | Reason | Rule |\n|---|---|---|\n")
+		for _, rr := range ignoredDrift {
+			bw.printf("| `%s` | %s | `%s` |\n",
+				mdCell(rr.Address), mdCell(reasonOr(rr.SuppressReason)), mdCell(rr.SuppressSrc))
+		}
+		for _, d := range ignoredDepr {
+			bw.printf("| %s | %s | `%s` |\n",
+				mdCell(d.Summary), mdCell(reasonOr(d.SuppressReason)), mdCell(d.SuppressSrc))
 		}
 	}
 
@@ -585,12 +669,28 @@ type sarifResult struct {
 	// Provenance.firstDetectionTimeUtc — set only under -baseline: the time the
 	// finding was first seen, forwarded from the previous run. The Scans tab
 	// renders it as a "First Observed" date and an "Age" column.
-	Provenance *sarifProvenance  `json:"provenance,omitempty"`
-	Properties map[string]string `json:"properties,omitempty"`
+	Provenance   *sarifProvenance   `json:"provenance,omitempty"`
+	Suppressions []sarifSuppression `json:"suppressions,omitempty"`
+	Properties   map[string]string  `json:"properties,omitempty"`
 }
 
 type sarifProvenance struct {
 	FirstDetectionTimeUtc string `json:"firstDetectionTimeUtc,omitempty"`
+}
+
+// sarifSuppression marks a result the user chose to ignore. kind "inSource" is
+// an inline `# tf-snag:ignore` comment; "external" is the ignore file. The Scans
+// tab hides suppressed results by default (Suppression filter = unsuppressed).
+type sarifSuppression struct {
+	Kind          string `json:"kind"`
+	Justification string `json:"justification,omitempty"`
+}
+
+func suppressionsFor(kind, reason string) []sarifSuppression {
+	if kind == "" {
+		kind = "external"
+	}
+	return []sarifSuppression{{Kind: kind, Justification: reason}}
 }
 
 type sarifLocation struct {
@@ -676,6 +776,9 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc, prior *PriorR
 			PartialFingerprints: map[string]string{"driftAddress/v1": rr.Address},
 			Properties:          sarifProps(rr),
 		}
+		if rr.Suppressed {
+			res.Suppressions = suppressionsFor(rr.SuppressKind, rr.SuppressReason)
+		}
 
 		var loc sarifLocation
 		if s, ok := src[rr.Type+"."+resourceName(rr.Address)]; ok {
@@ -698,6 +801,9 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc, prior *PriorR
 			Message:             sarifText{Text: deprecationMessage(d)},
 			PartialFingerprints: map[string]string{"deprecation/v1": d.key()},
 			Properties:          deprecationProps(d),
+		}
+		if d.Suppressed {
+			res.Suppressions = suppressionsFor(d.SuppressKind, d.SuppressReason)
 		}
 		for i, s := range d.Sites {
 			if s.Address != "" {
@@ -1126,24 +1232,26 @@ func (r *Report) WriteTextColor(w io.Writer) error { return r.writeText(w, color
 
 func (r *Report) writeText(w io.Writer, c palette) error {
 	bw := &errWriter{w: w}
+	drift, ignoredDrift := r.gatingDrift()
 
-	if len(r.Drift) == 0 {
+	if len(drift) == 0 {
 		bw.printf("%stf-snag — no drift detected%s", c.green, c.reset)
 		if len(r.Pending) > 0 {
 			bw.printf(" (%d pending change(s) from configuration)", len(r.Pending))
 		}
 		bw.printf("\n")
 		r.writeDeprecations(bw, c)
+		r.writeIgnored(bw, c, ignoredDrift)
 		return bw.err
 	}
 
-	head := fmt.Sprintf("tf-snag — %d resource(s) changed outside Terraform", len(r.Drift))
-	if b := driftBreakdown(r.Drift); b != "" {
+	head := fmt.Sprintf("tf-snag — %d resource(s) changed outside Terraform", len(drift))
+	if b := driftBreakdown(drift); b != "" {
 		head += "  (" + b + ")"
 	}
 	bw.printf("%s%s%s%s\n\n", c.bold, c.yellow, head, c.reset)
 
-	for _, rr := range r.Drift {
+	for _, rr := range drift {
 		bw.printf("  %s%s%s %s%s\n", signColor(c, rr.Action), sign(rr.Action), c.reset,
 			rr.Address, moduleSuffix(rr.Module))
 		if len(rr.Attrs) == 0 {
@@ -1168,22 +1276,50 @@ func (r *Report) writeText(w io.Writer, c palette) error {
 	}
 
 	r.writeDeprecations(bw, c)
+	r.writeIgnored(bw, c, ignoredDrift)
 	return bw.err
 }
 
-// writeDeprecations prints the deprecation section for the text report. No-op
-// when the report carries none.
+// writeDeprecations prints the un-suppressed deprecation section. No-op when
+// there are none to show.
 func (r *Report) writeDeprecations(bw *errWriter, c palette) {
-	if len(r.Deprecations) == 0 {
+	depr, _ := r.gatingDeprecations()
+	if len(depr) == 0 {
 		return
 	}
-	bw.printf("\n%sdeprecation warning(s): %d%s\n", c.dim, len(r.Deprecations), c.reset)
-	for _, d := range r.Deprecations {
+	bw.printf("\n%sdeprecation warning(s): %d%s\n", c.dim, len(depr), c.reset)
+	for _, d := range depr {
 		bw.printf("  %s%s%s\n", c.yellow, d.Summary, c.reset)
 		for _, s := range d.Sites {
 			bw.printf("      %s%s%s\n", c.dim, siteLabel(s), c.reset)
 		}
 	}
+}
+
+// writeIgnored prints the suppressed drift + deprecations tail. No-op when none.
+func (r *Report) writeIgnored(bw *errWriter, c palette, ignoredDrift []ResourceReport) {
+	_, ignoredDepr := r.gatingDeprecations()
+	if len(ignoredDrift) == 0 && len(ignoredDepr) == 0 {
+		return
+	}
+	bw.printf("\n%signored: %d drift, %d deprecation(s)%s\n",
+		c.dim, len(ignoredDrift), len(ignoredDepr), c.reset)
+	for _, rr := range ignoredDrift {
+		bw.printf("  %s%s %s — %s [%s]%s\n", c.dim,
+			sign(rr.Action), rr.Address+moduleSuffix(rr.Module),
+			reasonOr(rr.SuppressReason), rr.SuppressSrc, c.reset)
+	}
+	for _, d := range ignoredDepr {
+		bw.printf("  %s%s — %s [%s]%s\n", c.dim,
+			d.Summary, reasonOr(d.SuppressReason), d.SuppressSrc, c.reset)
+	}
+}
+
+func reasonOr(s string) string {
+	if s == "" {
+		return "no reason given"
+	}
+	return s
 }
 
 func attrPad(attrs []plan.AttrDiff) int {

@@ -1,0 +1,6 @@
+drift:
+  - address: "azurerm_storage_account.data"
+    reason: "temp tag from deploy script — JIRA-123"
+deprecations:
+  - match: "\"foo\" argument"
+    reason: "provider upgrade tracked separately"
