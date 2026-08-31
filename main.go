@@ -80,7 +80,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	exitCode := fs.Bool("exit-code", true, "exit 2 when drift or a deprecation is detected")
 	color := fs.String("color", "auto", "colorize text output: auto, always or never")
 	source := fs.String("source", "", "Terraform source `dir`; when set, sarif locations link to the .tf file declaring each resource")
-	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif` then stamps each result new/updated/absent")
+	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif`/`json` then stamps each result new/updated (sarif also emits absent)")
 	ignorePath := fs.String("ignore", "", "tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd or -source); suppressed findings stay in the report but do not trip -exit-code")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
@@ -103,10 +103,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch {
-	case !deprOn, *format == "sarif", *format == "text", *format == "markdown", *format == "md":
+	case !deprOn, *format == "sarif", *format == "text", *format == "markdown", *format == "md", *format == "json":
 		// deprecations are carried by these formats
 	default:
-		fmt.Fprintln(stderr, "tf-snag: -check deprecations supports -format sarif, text or markdown only")
+		fmt.Fprintln(stderr, "tf-snag: -check deprecations supports -format sarif, json, text or markdown only")
 		return 2
 	}
 	if *planLogPath != "" && !deprOn {
@@ -117,8 +117,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tf-snag: -plan-log-dir set but -check does not include deprecations")
 		return 2
 	}
-	if *baseline != "" && *format != "sarif" {
-		fmt.Fprintln(stderr, "tf-snag: -baseline only applies to -format sarif")
+	if *baseline != "" && *format != "sarif" && *format != "json" {
+		fmt.Fprintln(stderr, "tf-snag: -baseline applies to -format sarif or json")
 		return 2
 	}
 	if *planPath != "" && !driftOn {
@@ -201,6 +201,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			err = rep.WriteText(stdout)
 		}
 	case "json":
+		if *baseline != "" {
+			prior, code := loadPrior(*baseline, stderr)
+			if code != 0 {
+				return code
+			}
+			prior.StampReport(rep)
+		}
 		err = rep.WriteJSON(stdout)
 	case "markdown", "md":
 		err = rep.WriteMarkdown(stdout)
@@ -217,15 +224,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		var prior *report.PriorResults
 		if *baseline != "" {
-			praw, rerr := os.ReadFile(*baseline)
-			if rerr != nil {
-				fmt.Fprintln(stderr, "tf-snag:", rerr)
-				return 2
-			}
-			prior, err = report.ParsePriorSARIF(praw)
-			if err != nil {
-				fmt.Fprintln(stderr, "tf-snag:", err)
-				return 2
+			var code int
+			if prior, code = loadPrior(*baseline, stderr); code != 0 {
+				return code
 			}
 		}
 		err = rep.WriteSARIF(stdout, srcIndex, prior)
@@ -272,6 +273,23 @@ func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Write
 
 	set.Apply(rep)
 	return 0
+}
+
+// loadPrior reads and parses a previous run's tf-snag.sarif for -baseline. On
+// error it prints to stderr and returns a non-zero exit code (the second
+// return); callers propagate that. A successful parse returns (prior, 0).
+func loadPrior(path string, stderr io.Writer) (*report.PriorResults, int) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return nil, 2
+	}
+	prior, err := report.ParsePriorSARIF(raw)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return nil, 2
+	}
+	return prior, 0
 }
 
 // discoverIgnore returns the first existing .tf-snag-ignore.yml (or .yaml) in
