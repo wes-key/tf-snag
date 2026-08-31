@@ -110,11 +110,21 @@
   width: 14px;
   color: var(--tfd-muted);
 }
+.tfd-h3-toggle { cursor: pointer; user-select: none; }
 
 .tfd-detail > td { padding: 0 10px 10px 34px; background: var(--tfd-hover); }
 .tfd-hidden { display: none; }
 
-.tfd-attrs { border-collapse: collapse; margin: 8px 0 2px; width: 100%; }
+.tfd-detail-body { padding-top: 8px; }
+.tfd-detail-body > :first-child { margin-top: 0; }
+
+/* in-repo source link */
+.tfd-loc { font-size: 12px; word-break: break-all; }
+a.tfd-loc { color: var(--tfd-accent); text-decoration: none; }
+a.tfd-loc:hover { text-decoration: underline; }
+.tfd-srcline { margin: 8px 0 2px; font-size: 12px; }
+
+.tfd-attrs { border-collapse: collapse; margin: 0 0 2px; width: 100%; }
 .tfd-attrs th, .tfd-attrs td {
   padding: 4px 10px;
   border-bottom: 1px solid var(--tfd-border);
@@ -136,20 +146,13 @@
 }
 .tfd-pill-new { background: var(--tfd-accent); color: #ffffff; }
 
-/* deprecations */
-.tfd-depr {
-  border: 1px solid var(--tfd-border);
-  border-left: 3px solid var(--tfd-warn-bd);
-  border-radius: 3px;
-  padding: 8px 12px;
-  margin-bottom: 8px;
-}
-.tfd-depr-hd { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
-.tfd-depr-hd strong { font-size: 13px; }
-.tfd-sev { color: var(--tfd-warn-bd); font-weight: 700; margin-right: 6px; }
+/* deprecation severity glyph (sits in the shared sign column) */
+.tfd-sev { color: var(--tfd-warn-bd); }
 .tfd-sev-error { color: var(--tfd-err-bd); }
-.tfd-depr-detail { color: var(--tfd-muted); white-space: pre-line; margin-top: 3px; }
-.tfd-depr-sites { margin: 6px 0 0; padding: 0; list-style: none; }
+
+/* deprecation detail (inside the expandable row) */
+.tfd-depr-detail { color: var(--tfd-muted); white-space: pre-line; }
+.tfd-depr-sites { margin: 8px 0 0; padding: 0; list-style: none; }
 .tfd-depr-sites li { font-size: 12px; }
 .tfd-depr-sites code { word-break: break-all; }
 
