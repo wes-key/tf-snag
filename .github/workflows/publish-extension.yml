@@ -11,8 +11,8 @@
 #     created at https://marketplace.visualstudio.com/manage
 #   - repo secret TFX_MARKETPLACE_TOKEN: an Azure DevOps PAT, "All accessible
 #     organizations", scope Marketplace > Manage, owned by that publisher's account
-#   - optional repo variable ADO_ORG: the org to share the private extension with
-#     (defaults to danieljamesconstruction)
+#   - repo variable ADO_ORG: the Azure DevOps org to share the private extension
+#     with (required for a real publish; not needed for a dry run)
 #
 # Version published is 0.<minor>.<run_number> (minor taken from the manifest), so
 # re-runs always publish a higher version - the Marketplace rejects re-publishing
@@ -65,7 +65,7 @@ jobs:
       - name: "${{ inputs.dry_run && 'Package (dry run)' || 'Package and publish' }} — ${{ inputs.channel }} v${{ steps.ver.outputs.version }}"
         env:
           TFX_PAT: ${{ secrets.TFX_MARKETPLACE_TOKEN }}
-          ADO_ORG: ${{ vars.ADO_ORG || 'danieljamesconstruction' }}
+          ADO_ORG: ${{ vars.ADO_ORG }}
           CHANNEL: ${{ inputs.channel }}
           DRY_RUN: ${{ inputs.dry_run }}
           VERSION: ${{ steps.ver.outputs.version }}
@@ -81,6 +81,10 @@ jobs:
           else
             if [ -z "${TFX_PAT:-}" ]; then
               echo "::error::secret TFX_MARKETPLACE_TOKEN is not set" >&2
+              exit 1
+            fi
+            if [ -z "${ADO_ORG:-}" ]; then
+              echo "::error::variable ADO_ORG (the org to share the extension with) is not set" >&2
               exit 1
             fi
             npx tfx-cli extension publish "${args[@]}" \

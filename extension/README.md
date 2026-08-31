@@ -50,9 +50,9 @@ explicitly shared with.
    `vss-extension.json` (`"publisher": "wes-key"`).
 2. Create an Azure DevOps **PAT**: *All accessible organizations*, scope
    *Marketplace → Manage*, from an account that owns that publisher.
-3. Add it as the GitHub repo secret **`TFX_MARKETPLACE_TOKEN`**. Optionally set
-   repo variable **`ADO_ORG`** to the org to share with (default:
-   `danieljamesconstruction`).
+3. Add it as the GitHub repo secret **`TFX_MARKETPLACE_TOKEN`**.
+4. Set repo variable **`ADO_ORG`** to the Azure DevOps org to share the private
+   extension with (required for a real publish; a dry run doesn't need it).
 
 **Publish** — run the **Publish ADO extension** workflow
 (`.github/workflows/publish-extension.yml`) from the Actions tab:
@@ -75,7 +75,7 @@ Install**.
 export TFX_PAT=xxxxxxxx
 npx tfx-cli extension publish \
   --manifest-globs vss-extension.json \
-  --share-with danieljamesconstruction \
+  --share-with <your-azure-devops-org> \
   --auth-type pat --token "$TFX_PAT" --rev-version
 ```
 
