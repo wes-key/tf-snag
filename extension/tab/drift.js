@@ -13,7 +13,11 @@
 
   var SIGN = { create: "+", update: "~", delete: "−", replace: "±", read: " ", "no-op": " " };
 
-  VSS.init({ explicitNotifyLoaded: true, usePlatformStyles: true, applyTheme: true });
+  // usePlatformScripts: true makes the host inject its module loader so
+  // VSS.require() below can resolve platform modules (TFS/Build/RestClient).
+  // Without it VSS.require throws "window.require is not a function" and the
+  // tab spins forever (notifyLoadSucceeded is never reached).
+  VSS.init({ explicitNotifyLoaded: true, usePlatformScripts: true, usePlatformStyles: true, applyTheme: true });
 
   VSS.ready(function () {
     VSS.require(["VSS/Service", "TFS/Build/RestClient"], function (VSS_Service, BuildRestClient) {
