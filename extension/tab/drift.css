@@ -146,6 +146,24 @@ a.tfd-loc:hover { text-decoration: underline; }
 }
 .tfd-pill-new { background: var(--tfd-accent); color: #ffffff; }
 
+/* category badge (change action, deprecation severity) */
+.tfd-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
+.tfd-badge-create   { background: var(--tfd-ok-bg);   color: var(--tfd-add); }
+.tfd-badge-update   { background: var(--tfd-warn-bg);  color: var(--tfd-warn-bd); }
+.tfd-badge-delete   { background: var(--tfd-err-bg);   color: var(--tfd-del); }
+.tfd-badge-replace  { background: var(--tfd-err-bg);   color: var(--tfd-del); }
+.tfd-badge-warning  { background: var(--tfd-warn-bg);  color: var(--tfd-warn-bd); }
+.tfd-badge-error    { background: var(--tfd-err-bg);   color: var(--tfd-del); }
+.tfd-badge-noop,
+.tfd-badge-read     { background: var(--tfd-hover);    color: var(--tfd-muted); }
+
 /* deprecation severity glyph (sits in the shared sign column) */
 .tfd-sev { color: var(--tfd-warn-bd); }
 .tfd-sev-error { color: var(--tfd-err-bd); }
