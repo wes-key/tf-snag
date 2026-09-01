@@ -245,6 +245,15 @@ tf-snag -check all -plan plan.json -plan-log plan.jsonl \
   -teams-run-url "$RUN_URL"
 ```
 
+The card leads with a tinted banner carrying the verdict — red for drift, amber
+for deprecations alone, green for a clean run — then a fact list of the counts.
+Drift and deprecations each get their own **collapsed** group below that: a
+tinted header row showing the kind and its count, which expands in place when
+clicked (`Action.ToggleVisibility`). A channel post should be glanceable, so the
+detail stays folded away until someone wants it. Inside a group each finding
+gets its plan sign in the matching colour (green create, red delete, amber
+update) with the attribute changes beneath.
+
 The channel only hears from it when there is something un-suppressed to report;
 pass `-teams-notify always` to confirm on every run that the check ran at all.
 Ignored findings are never listed — they are summarised as an "Ignored" count so

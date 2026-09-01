@@ -9,6 +9,30 @@ import (
 	"github.com/wes-key/tf-snag/internal/plan"
 )
 
+// acEl mirrors an Adaptive Card element, deep enough to walk Containers and
+// ColumnSets.
+type acEl struct {
+	Type      string `json:"type"`
+	ID        string `json:"id"`
+	Text      string `json:"text"`
+	Color     string `json:"color"`
+	Style     string `json:"style"`
+	Weight    string `json:"weight"`
+	IsVisible *bool  `json:"isVisible"`
+	Facts     []struct {
+		Title string `json:"title"`
+		Value string `json:"value"`
+	} `json:"facts"`
+	Items   []acEl `json:"items"`
+	Columns []struct {
+		Items []acEl `json:"items"`
+	} `json:"columns"`
+	SelectAction *struct {
+		Type           string   `json:"type"`
+		TargetElements []string `json:"targetElements"`
+	} `json:"selectAction"`
+}
+
 // teamsDoc mirrors the parts of the payload the tests assert on.
 type teamsDoc struct {
 	Type        string `json:"type"`
@@ -17,15 +41,7 @@ type teamsDoc struct {
 		Content     struct {
 			Type    string `json:"type"`
 			Version string `json:"version"`
-			Body    []struct {
-				Type  string `json:"type"`
-				Text  string `json:"text"`
-				Color string `json:"color"`
-				Facts []struct {
-					Title string `json:"title"`
-					Value string `json:"value"`
-				} `json:"facts"`
-			} `json:"body"`
+			Body    []acEl `json:"body"`
 			Actions []struct {
 				Type  string `json:"type"`
 				Title string `json:"title"`
@@ -36,6 +52,34 @@ type teamsDoc struct {
 			} `json:"msteams"`
 		} `json:"content"`
 	} `json:"attachments"`
+}
+
+// walk visits every element in the card, descending into Containers and
+// ColumnSet columns.
+func walk(els []acEl, fn func(acEl)) {
+	for _, e := range els {
+		fn(e)
+		walk(e.Items, fn)
+		for _, c := range e.Columns {
+			walk(c.Items, fn)
+		}
+	}
+}
+
+func allEls(doc teamsDoc) []acEl {
+	var out []acEl
+	walk(doc.Attachments[0].Content.Body, func(e acEl) { out = append(out, e) })
+	return out
+}
+
+// elByID finds an element by its Adaptive Card id.
+func elByID(doc teamsDoc, id string) (acEl, bool) {
+	for _, e := range allEls(doc) {
+		if e.ID == id {
+			return e, true
+		}
+	}
+	return acEl{}, false
 }
 
 func parseTeams(t *testing.T, r *Report, opts TeamsOptions) (teamsDoc, string) {
@@ -62,20 +106,33 @@ func mustParseTeams(t *testing.T, r *Report) teamsDoc {
 // against that rather than the on-the-wire text, which is full of backslashes.
 func bodyText(doc teamsDoc) string {
 	var b strings.Builder
-	for _, e := range doc.Attachments[0].Content.Body {
-		b.WriteString(e.Text)
-		b.WriteString("\n")
-	}
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
+		if e.Text != "" {
+			b.WriteString(e.Text)
+			b.WriteString("\n")
+		}
+	})
 	return strings.NewReplacer(`\*`, "*", `\_`, "_", `\[`, "[", `\]`, "]").Replace(b.String())
+}
+
+// headline is the first TextBlock in the banner container.
+func headline(doc teamsDoc) acEl {
+	var out acEl
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
+		if out.Text == "" && e.Type == "TextBlock" {
+			out = e
+		}
+	})
+	return out
 }
 
 func factsOf(doc teamsDoc) map[string]string {
 	m := map[string]string{}
-	for _, e := range doc.Attachments[0].Content.Body {
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
 		for _, f := range e.Facts {
 			m[f.Title] = f.Value
 		}
-	}
+	})
 	return m
 }
 
@@ -105,24 +162,26 @@ func TestWriteTeamsEnvelope(t *testing.T) {
 	}
 }
 
-func TestWriteTeamsHeadlineAndColour(t *testing.T) {
+// The verdict is carried by the tint of the banner container, not by colouring
+// the headline text (which would be unreadable on the tint).
+func TestWriteTeamsHeadlineAndBannerStyle(t *testing.T) {
 	cases := []struct {
 		name     string
 		report   *Report
 		headline string
-		colour   string
+		style    string
 	}{
 		{
 			name:     "clean",
 			report:   Build(&plan.Plan{TerraformVersion: "1.9.6"}),
 			headline: "No drift or deprecations",
-			colour:   "Good",
+			style:    "good",
 		},
 		{
 			name:     "drift only",
 			report:   Build(deletedVaultPlan()),
 			headline: "1 resource changed outside Terraform",
-			colour:   "Attention",
+			style:    "attention",
 		},
 		{
 			name: "deprecations only",
@@ -131,20 +190,103 @@ func TestWriteTeamsHeadlineAndColour(t *testing.T) {
 				{Severity: "warning", Summary: "Deprecated resource"},
 			}},
 			headline: "2 deprecation warnings",
-			colour:   "Warning",
+			style:    "warning",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			doc, _ := parseTeams(t, tc.report, TeamsOptions{})
-			head := doc.Attachments[0].Content.Body[0]
-			if head.Text != tc.headline {
+
+			banner := doc.Attachments[0].Content.Body[0]
+			if banner.Type != "Container" || banner.Style != tc.style {
+				t.Errorf("banner = %s/%q, want Container/%q", banner.Type, banner.Style, tc.style)
+			}
+			if head := headline(doc); head.Text != tc.headline {
 				t.Errorf("headline = %q, want %q", head.Text, tc.headline)
 			}
-			if head.Color != tc.colour {
-				t.Errorf("colour = %q, want %q", head.Color, tc.colour)
+			if head := headline(doc); head.Color != "" {
+				t.Errorf("headline colour = %q, want none (the container tint is the signal)", head.Color)
 			}
 		})
+	}
+}
+
+// Each kind gets a group that is collapsed on arrival and expands via
+// Action.ToggleVisibility.
+func TestWriteTeamsGroupsCollapsedByDefault(t *testing.T) {
+	doc, _ := parseTeams(t, suppressedReport(), TeamsOptions{})
+
+	for _, id := range []string{"driftBody", "deprBody"} {
+		body, ok := elByID(doc, id)
+		if !ok {
+			t.Fatalf("no %q container — groups missing", id)
+		}
+		if body.IsVisible == nil || *body.IsVisible {
+			t.Errorf("%s should start hidden, isVisible = %v", id, body.IsVisible)
+		}
+	}
+
+	// The header toggles the body and both chevrons in one action.
+	var toggles int
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
+		if e.SelectAction == nil {
+			return
+		}
+		toggles++
+		if e.SelectAction.Type != "Action.ToggleVisibility" {
+			t.Errorf("selectAction = %q", e.SelectAction.Type)
+		}
+		if len(e.SelectAction.TargetElements) != 3 {
+			t.Errorf("targetElements = %v, want body + both chevrons", e.SelectAction.TargetElements)
+		}
+		if e.Style != "emphasis" {
+			t.Errorf("group header style = %q, want emphasis", e.Style)
+		}
+	})
+	if toggles != 2 {
+		t.Errorf("toggle headers = %d, want 2 (drift + deprecations)", toggles)
+	}
+
+	// Collapsed chevron shown, expanded one hidden.
+	if shut, _ := elByID(doc, "driftShut"); shut.IsVisible == nil || !*shut.IsVisible {
+		t.Error("collapsed chevron should be visible to start")
+	}
+	if open, _ := elByID(doc, "driftOpen"); open.IsVisible == nil || *open.IsVisible {
+		t.Error("expanded chevron should be hidden to start")
+	}
+}
+
+// A clean report has no groups at all — nothing to collapse.
+func TestWriteTeamsCleanReportHasNoGroups(t *testing.T) {
+	doc, _ := parseTeams(t, Build(&plan.Plan{TerraformVersion: "1.9.6"}), TeamsOptions{})
+	if _, ok := elByID(doc, "driftBody"); ok {
+		t.Error("clean report should not carry a drift group")
+	}
+	if _, ok := elByID(doc, "deprBody"); ok {
+		t.Error("clean report should not carry a deprecations group")
+	}
+}
+
+// The sign glyph is coloured per action so the group reads at a glance.
+func TestWriteTeamsColoursActionGlyphs(t *testing.T) {
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.upd", map[string]any{"v": 1}, map[string]any{"v": 2}),
+	}})
+	r.Drift = append(r.Drift, ResourceReport{Address: "azurerm_x.gone", Action: "delete"})
+	r.Drift = append(r.Drift, ResourceReport{Address: "azurerm_x.made", Action: "create"})
+
+	doc, _ := parseTeams(t, r, TeamsOptions{})
+	got := map[string]string{}
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
+		if e.Color != "" && e.Text != "" {
+			got[e.Text] = e.Color
+		}
+	})
+	want := map[string]string{sign("update"): "Warning", sign("delete"): "Attention", sign("create"): "Good"}
+	for glyph, colour := range want {
+		if got[glyph] != colour {
+			t.Errorf("glyph %q colour = %q, want %q (all: %v)", glyph, got[glyph], colour, got)
+		}
 	}
 }
 
@@ -192,7 +334,7 @@ func TestWriteTeamsNoRunURLNoAction(t *testing.T) {
 func TestWriteTeamsExcludesSuppressed(t *testing.T) {
 	doc, _ := parseTeams(t, suppressedReport(), TeamsOptions{})
 
-	head := doc.Attachments[0].Content.Body[0].Text
+	head := headline(doc).Text
 	if head != "1 resource changed outside Terraform, 1 deprecation" {
 		t.Errorf("headline = %q, want only the un-suppressed findings counted", head)
 	}
@@ -229,7 +371,7 @@ func TestWriteTeamsCapsItems(t *testing.T) {
 		t.Errorf("missing the truncation line:\n%s", body)
 	}
 	// The headline still counts everything, only the listing is capped.
-	if head := doc.Attachments[0].Content.Body[0].Text; !strings.Contains(head, "5 resources") {
+	if head := headline(doc).Text; !strings.Contains(head, "5 resources") {
 		t.Errorf("headline = %q, want the full count", head)
 	}
 }

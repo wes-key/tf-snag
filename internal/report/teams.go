@@ -54,27 +54,41 @@ func (r *Report) teamsPayload(opts TeamsOptions) teamsMessage {
 		max = teamsMaxItems
 	}
 
-	body := []acElement{{
-		Type:   "TextBlock",
-		Text:   teamsHeadline(len(drift), len(depr)),
-		Size:   "Large",
-		Weight: "Bolder",
-		Color:  teamsColor(len(drift), len(depr)),
-		Wrap:   true,
+	// Banner: a tinted, full-bleed box carrying the verdict. The tint is the
+	// signal, so the text inside stays default-coloured — an Attention-coloured
+	// TextBlock on an attention-styled container is unreadable.
+	banner := []acElement{{
+		Type: "TextBlock", Text: teamsHeadline(len(drift), len(depr)),
+		Size: "Large", Weight: "Bolder", Wrap: true,
 	}}
 	if opts.Context != "" {
-		body = append(body, acElement{
+		banner = append(banner, acElement{
 			Type: "TextBlock", Text: opts.Context,
 			IsSubtle: true, Wrap: true, Spacing: "None",
 		})
 	}
-	body = append(body, acElement{Type: "FactSet", Facts: r.teamsFacts(drift, depr, len(ignoredDrift)+len(ignoredDepr))})
+	body := []acElement{{
+		Type:  "Container",
+		Style: teamsStyle(len(drift), len(depr)),
+		Bleed: true,
+		Items: banner,
+	}}
 
+	body = append(body, acElement{
+		Type:    "FactSet",
+		Spacing: "Medium",
+		Facts:   r.teamsFacts(drift, depr, len(ignoredDrift)+len(ignoredDepr)),
+	})
+
+	// Each kind gets a collapsible group. Collapsed by default: the counts above
+	// are the at-a-glance view, and a channel post should not be a wall of text.
 	if len(drift) > 0 {
-		body = append(body, teamsSection("Changed outside Terraform", teamsDriftLines(drift, max))...)
+		body = append(body, teamsGroup("drift", "Changed outside Terraform", len(drift),
+			teamsDriftItems(drift, max))...)
 	}
 	if len(depr) > 0 {
-		body = append(body, teamsSection("Deprecations", teamsDeprLines(depr, max))...)
+		body = append(body, teamsGroup("depr", "Deprecations", len(depr),
+			teamsDeprItems(depr, max))...)
 	}
 
 	card := adaptiveCard{
@@ -111,17 +125,97 @@ func teamsHeadline(nDrift, nDepr int) string {
 		nDrift, plural(nDrift), nDepr, plural(nDepr))
 }
 
-// teamsColor maps the verdict onto the Adaptive Card palette: drift is the
-// gating failure (attention), deprecations alone are a warning.
-func teamsColor(nDrift, nDepr int) string {
+// teamsStyle tints the banner container: drift is the gating failure
+// (attention), deprecations alone are a warning, nothing is good.
+func teamsStyle(nDrift, nDepr int) string {
 	switch {
 	case nDrift > 0:
-		return "Attention"
+		return "attention"
 	case nDepr > 0:
+		return "warning"
+	}
+	return "good"
+}
+
+// teamsActionColor picks the Adaptive Card text colour for a plan action, so the
+// sign glyph carries the same meaning it does in the console report.
+func teamsActionColor(action string) string {
+	switch action {
+	case "create":
+		return "Good"
+	case "delete", "replace":
+		return "Attention"
+	default:
 		return "Warning"
 	}
-	return "Good"
 }
+
+// teamsGroup renders one collapsible section: an emphasis-tinted header row that
+// toggles the body, and the body itself, hidden to start. Action.ToggleVisibility
+// flips all three targets at once, so the chevron swaps with the body.
+func teamsGroup(id, title string, count int, items []acElement) []acElement {
+	bodyID, openID, shutID := id+"Body", id+"Open", id+"Shut"
+	toggle := &acAction{
+		Type:           "Action.ToggleVisibility",
+		Title:          title,
+		TargetElements: []string{bodyID, openID, shutID},
+	}
+
+	header := acElement{
+		Type:         "Container",
+		Style:        "emphasis",
+		Spacing:      "Medium",
+		SelectAction: toggle,
+		Items: []acElement{{
+			Type: "ColumnSet",
+			Columns: []acColumn{
+				{Type: "Column", Width: "stretch", Items: []acElement{{
+					Type:   "TextBlock",
+					Text:   fmt.Sprintf("%s  (%d)", title, count),
+					Weight: "Bolder",
+					Wrap:   true,
+				}}},
+				{Type: "Column", Width: "auto", Items: []acElement{
+					{Type: "TextBlock", ID: shutID, Text: "▸", Weight: "Bolder", IsVisible: boolPtr(true)},
+					{Type: "TextBlock", ID: openID, Text: "▾", Weight: "Bolder", IsVisible: boolPtr(false)},
+				}},
+			},
+		}},
+	}
+
+	return []acElement{header, {
+		Type:      "Container",
+		ID:        bodyID,
+		IsVisible: boolPtr(false),
+		Spacing:   "None",
+		Items:     items,
+	}}
+}
+
+// teamsFinding is one row inside a group: a coloured glyph in a narrow column,
+// then the title and its detail.
+func teamsFinding(glyph, colour, title, detail string, separator bool) acElement {
+	lines := []acElement{{Type: "TextBlock", Text: title, Wrap: true}}
+	if detail != "" {
+		lines = append(lines, acElement{
+			Type: "TextBlock", Text: detail,
+			Wrap: true, IsSubtle: true, Spacing: "None",
+		})
+	}
+	return acElement{
+		Type:      "ColumnSet",
+		Spacing:   "Small",
+		Separator: separator,
+		Columns: []acColumn{
+			{Type: "Column", Width: "auto", Items: []acElement{{
+				Type: "TextBlock", Text: glyph, Color: colour, Weight: "Bolder",
+			}}},
+			{Type: "Column", Width: "stretch", Items: lines},
+		},
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 func (r *Report) teamsFacts(drift []ResourceReport, depr []Deprecation, ignored int) []acFact {
 	add, chg, del := tally(r.Pending)
@@ -149,35 +243,21 @@ func teamsCount(n int, detail string) string {
 	return fmt.Sprintf("%d (%s)", n, detail)
 }
 
-// teamsSection is a separated heading plus one TextBlock per line.
-func teamsSection(title string, lines []string) []acElement {
-	out := []acElement{{
-		Type: "TextBlock", Text: title, Weight: "Bolder",
-		Separator: true, Spacing: "Medium", Wrap: true,
-	}}
-	for _, l := range lines {
-		out = append(out, acElement{Type: "TextBlock", Text: l, Wrap: true, Spacing: "Small"})
-	}
-	return out
-}
-
-func teamsDriftLines(drift []ResourceReport, max int) []string {
-	lines := make([]string, 0, max+1)
+func teamsDriftItems(drift []ResourceReport, max int) []acElement {
+	out := make([]acElement, 0, max+1)
 	for i, rr := range drift {
 		if i == max {
-			lines = append(lines, teamsMore(len(drift)-max, "resource"))
+			out = append(out, teamsMoreItem(len(drift)-max, "resource"))
 			break
 		}
-		line := sign(rr.Action) + " **" + teamsText(rr.Address) + "**"
+		title := "**" + teamsText(rr.Address) + "**"
 		if rr.Module != "" {
-			line += " _(" + teamsText(rr.Module) + ")_"
+			title += " _(" + teamsText(rr.Module) + ")_"
 		}
-		if d := teamsAttrDetail(rr); d != "" {
-			line += "\n\n" + d
-		}
-		lines = append(lines, line)
+		out = append(out, teamsFinding(
+			sign(rr.Action), teamsActionColor(rr.Action), title, teamsAttrDetail(rr), i > 0))
 	}
-	return lines
+	return out
 }
 
 // teamsAttrDetail is the sub-line under a drifted resource: the first couple of
@@ -199,23 +279,29 @@ func teamsAttrDetail(rr ResourceReport) string {
 	return strings.Join(parts, "; ")
 }
 
-func teamsDeprLines(depr []Deprecation, max int) []string {
-	lines := make([]string, 0, max+1)
+func teamsDeprItems(depr []Deprecation, max int) []acElement {
+	out := make([]acElement, 0, max+1)
 	for i, d := range depr {
 		if i == max {
-			lines = append(lines, teamsMore(len(depr)-max, "deprecation"))
+			out = append(out, teamsMoreItem(len(depr)-max, "deprecation"))
 			break
 		}
-		line := "**" + teamsText(d.Summary) + "**"
+		sev := strings.ToLower(d.Severity)
+		glyph, colour := "⚠", "Warning"
+		if sev == "error" {
+			glyph, colour = "✖", "Attention"
+		}
+		var detail []string
 		if d.Detail != "" {
-			line += " — " + teamsText(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200))
+			detail = append(detail, teamsText(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200)))
 		}
 		if s := teamsSites(d); s != "" {
-			line += "\n\n" + s
+			detail = append(detail, s)
 		}
-		lines = append(lines, line)
+		out = append(out, teamsFinding(
+			glyph, colour, "**"+teamsText(d.Summary)+"**", strings.Join(detail, "\n\n"), i > 0))
 	}
-	return lines
+	return out
 }
 
 // teamsSites lists the addresses a deprecation fires at, capped so a
@@ -240,8 +326,15 @@ func teamsSites(d Deprecation) string {
 	return strings.Join(seen, ", ")
 }
 
-func teamsMore(n int, noun string) string {
-	return fmt.Sprintf("_…and %d more %s%s_", n, noun, plural(n))
+func teamsMoreItem(n int, noun string) acElement {
+	return acElement{
+		Type:      "TextBlock",
+		Text:      fmt.Sprintf("_…and %d more %s%s_", n, noun, plural(n)),
+		Wrap:      true,
+		IsSubtle:  true,
+		Spacing:   "Small",
+		Separator: true,
+	}
 }
 
 // teamsText neutralises the Markdown Teams *does* honour inside a TextBlock, so
@@ -276,20 +369,35 @@ type adaptiveCard struct {
 	MSTeams *acMSTeams  `json:"msteams,omitempty"`
 }
 
-// acElement covers the handful of Adaptive Card element types this card uses
-// (TextBlock, FactSet); omitempty keeps the payload to the fields each one
-// actually sets.
+// acElement covers the Adaptive Card element types this card uses — TextBlock,
+// FactSet, Container and ColumnSet. omitempty keeps the payload to the fields
+// each one actually sets. IsVisible is a pointer because "false" is meaningful
+// and must survive omitempty.
 type acElement struct {
 	Type      string   `json:"type"`
+	ID        string   `json:"id,omitempty"`
 	Text      string   `json:"text,omitempty"`
 	Weight    string   `json:"weight,omitempty"`
 	Size      string   `json:"size,omitempty"`
 	Color     string   `json:"color,omitempty"`
+	Style     string   `json:"style,omitempty"`
 	Wrap      bool     `json:"wrap,omitempty"`
 	Spacing   string   `json:"spacing,omitempty"`
 	IsSubtle  bool     `json:"isSubtle,omitempty"`
 	Separator bool     `json:"separator,omitempty"`
+	Bleed     bool     `json:"bleed,omitempty"`
+	IsVisible *bool    `json:"isVisible,omitempty"`
 	Facts     []acFact `json:"facts,omitempty"`
+
+	Items        []acElement `json:"items,omitempty"`   // Container
+	Columns      []acColumn  `json:"columns,omitempty"` // ColumnSet
+	SelectAction *acAction   `json:"selectAction,omitempty"`
+}
+
+type acColumn struct {
+	Type  string      `json:"type"`
+	Width string      `json:"width,omitempty"`
+	Items []acElement `json:"items,omitempty"`
 }
 
 type acFact struct {
@@ -299,8 +407,11 @@ type acFact struct {
 
 type acAction struct {
 	Type  string `json:"type"`
-	Title string `json:"title"`
+	Title string `json:"title,omitempty"`
 	URL   string `json:"url,omitempty"`
+	// TargetElements drives Action.ToggleVisibility: every id listed flips
+	// visibility when the action fires.
+	TargetElements []string `json:"targetElements,omitempty"`
 }
 
 type acMSTeams struct {
