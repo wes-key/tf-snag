@@ -72,6 +72,18 @@ func allEls(doc teamsDoc) []acEl {
 	return out
 }
 
+// elText is every string inside one element's subtree, un-escaped.
+func elText(e acEl) string {
+	var b strings.Builder
+	walk([]acEl{e}, func(x acEl) {
+		if x.Text != "" {
+			b.WriteString(x.Text)
+			b.WriteString("\n")
+		}
+	})
+	return strings.NewReplacer(`\*`, "*", `\_`, "_", `\[`, "[", `\]`, "]").Replace(b.String())
+}
+
 // elByID finds an element by its Adaptive Card id.
 func elByID(doc teamsDoc, id string) (acEl, bool) {
 	for _, e := range allEls(doc) {
@@ -216,7 +228,9 @@ func TestWriteTeamsHeadlineAndBannerStyle(t *testing.T) {
 func TestWriteTeamsGroupsCollapsedByDefault(t *testing.T) {
 	doc, _ := parseTeams(t, suppressedReport(), TeamsOptions{})
 
-	for _, id := range []string{"driftBody", "deprBody"} {
+	// suppressedReport has one live and one suppressed finding of each kind, so
+	// all four groups are present.
+	for _, id := range []string{"driftBody", "deprBody", "ignDriftBody", "ignDeprBody"} {
 		body, ok := elByID(doc, id)
 		if !ok {
 			t.Fatalf("no %q container — groups missing", id)
@@ -243,8 +257,8 @@ func TestWriteTeamsGroupsCollapsedByDefault(t *testing.T) {
 			t.Errorf("group header style = %q, want emphasis", e.Style)
 		}
 	})
-	if toggles != 2 {
-		t.Errorf("toggle headers = %d, want 2 (drift + deprecations)", toggles)
+	if toggles != 4 {
+		t.Errorf("toggle headers = %d, want 4 (drift, deprecations + both ignored groups)", toggles)
 	}
 
 	// Collapsed chevron shown, expanded one hidden.
@@ -346,15 +360,25 @@ func TestWriteTeamsExcludesSuppressed(t *testing.T) {
 		t.Errorf("Ignored fact = %q, want 2", facts["Ignored"])
 	}
 
-	body := bodyText(doc)
-	if strings.Contains(body, "azurerm_storage_account.data") {
-		t.Errorf("suppressed resource listed on the card:\n%s", body)
-	}
-	if strings.Contains(body, "Argument is deprecated") {
-		t.Errorf("suppressed deprecation listed on the card:\n%s", body)
-	}
-	if !strings.Contains(body, "azurerm_key_vault.vault") {
+	if body := bodyText(doc); !strings.Contains(body, "azurerm_key_vault.vault") {
 		t.Errorf("live drift missing from the card:\n%s", body)
+	}
+
+	// Suppressed findings are listed, but only inside their own collapsed
+	// groups — never among the live ones.
+	live, _ := elByID(doc, "driftBody")
+	if txt := elText(live); strings.Contains(txt, "azurerm_storage_account.data") {
+		t.Errorf("suppressed resource listed among live drift:\n%s", txt)
+	}
+	ign, ok := elByID(doc, "ignDriftBody")
+	if !ok {
+		t.Fatal("no ignored-drift group")
+	}
+	txt := elText(ign)
+	for _, want := range []string{"azurerm_storage_account.data", "temp tag", ".tf-snag-ignore.yml"} {
+		if !strings.Contains(txt, want) {
+			t.Errorf("ignored group missing %q — reason and rule should be visible:\n%s", want, txt)
+		}
 	}
 }
 

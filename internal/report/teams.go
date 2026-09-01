@@ -95,6 +95,17 @@ func (r *Report) teamsPayload(opts TeamsOptions) teamsMessage {
 			teamsDeprItems(depr, max))...)
 	}
 
+	// Suppressed findings get their own collapsed groups, as in the run tab:
+	// off the gate and out of the counts, but auditable without leaving Teams.
+	if n := len(ignoredDrift); n > 0 {
+		body = append(body, teamsGroup("ignDrift", "Ignored drift", n,
+			teamsIgnoredItems(ignoredDrift, max))...)
+	}
+	if n := len(ignoredDepr); n > 0 {
+		body = append(body, teamsGroup("ignDepr", "Ignored deprecations", n,
+			teamsIgnoredDeprItems(ignoredDepr, max))...)
+	}
+
 	card := adaptiveCard{
 		Schema:  "http://adaptivecards.io/schemas/adaptive-card.json",
 		Type:    "AdaptiveCard",
@@ -196,33 +207,60 @@ func teamsGroup(id, title string, count int, items []acElement) []acElement {
 	}}
 }
 
-// teamsFinding is one row inside a group: a coloured glyph in a narrow column,
-// then the title, its detail, and (when baselined) how long it has been there.
-func teamsFinding(glyph, colour, title, detail, prov string, separator bool) acElement {
-	lines := []acElement{{Type: "TextBlock", Text: title, Wrap: true}}
-	if detail != "" {
-		lines = append(lines, acElement{
-			Type: "TextBlock", Text: detail,
-			Wrap: true, IsSubtle: true, Spacing: "None",
+// teamsRow is one finding, laid out to echo the tf-snag run tab: a sign column,
+// the resource and its detail, then a coloured category badge and how long the
+// finding has been around.
+type teamsRow struct {
+	Glyph  string // plan sign or severity glyph
+	Colour string // Adaptive Card colour for the glyph and the badge
+	Title  string // bold primary line (Markdown)
+	Where  string // module, or the .tf that declares it
+	Detail string // attribute changes / deprecation detail
+	Badge  string // "Update", "Warning", ... the tab's Change / Severity column
+	Prov   string // "new since the last run" / "first seen ..."
+	Sep    bool
+}
+
+func teamsFinding(r teamsRow) acElement {
+	sub := func(text, size string) acElement {
+		return acElement{Type: "TextBlock", Text: text, Wrap: true, IsSubtle: true, Size: size, Spacing: "None"}
+	}
+
+	main := []acElement{{Type: "TextBlock", Text: r.Title, Wrap: true}}
+	if r.Where != "" {
+		main = append(main, sub(r.Where, "Small"))
+	}
+	if r.Detail != "" {
+		main = append(main, sub(r.Detail, ""))
+	}
+
+	// Right-hand column: the badge over the provenance, mirroring the tab's
+	// Change and First seen columns.
+	right := []acElement{}
+	if r.Badge != "" {
+		right = append(right, acElement{
+			Type: "TextBlock", Text: r.Badge, Color: r.Colour,
+			Weight: "Bolder", Size: "Small", HorizontalAlignment: "Right", Wrap: true,
 		})
 	}
-	if prov != "" {
-		lines = append(lines, acElement{
-			Type: "TextBlock", Text: prov,
-			Wrap: true, IsSubtle: true, Size: "Small", Spacing: "None",
+	if r.Prov != "" {
+		right = append(right, acElement{
+			Type: "TextBlock", Text: r.Prov, IsSubtle: true,
+			Size: "Small", HorizontalAlignment: "Right", Spacing: "None", Wrap: true,
 		})
 	}
-	return acElement{
-		Type:      "ColumnSet",
-		Spacing:   "Small",
-		Separator: separator,
-		Columns: []acColumn{
-			{Type: "Column", Width: "auto", Items: []acElement{{
-				Type: "TextBlock", Text: glyph, Color: colour, Weight: "Bolder",
-			}}},
-			{Type: "Column", Width: "stretch", Items: lines},
-		},
+
+	cols := []acColumn{
+		{Type: "Column", Width: "auto", Items: []acElement{{
+			Type: "TextBlock", Text: r.Glyph, Color: r.Colour, Weight: "Bolder",
+		}}},
+		{Type: "Column", Width: "stretch", Items: main},
 	}
+	if len(right) > 0 {
+		cols = append(cols, acColumn{Type: "Column", Width: "auto", Items: right})
+	}
+
+	return acElement{Type: "ColumnSet", Spacing: "Small", Separator: r.Sep, Columns: cols}
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -313,15 +351,42 @@ func teamsDriftItems(drift []ResourceReport, max int) []acElement {
 			out = append(out, teamsMoreItem(len(drift)-max, "resource"))
 			break
 		}
-		title := "**" + teamsText(rr.Address) + "**"
-		if rr.Module != "" {
-			title += " _(" + teamsText(rr.Module) + ")_"
-		}
-		out = append(out, teamsFinding(
-			sign(rr.Action), teamsActionColor(rr.Action), title, teamsAttrDetail(rr),
-			teamsProvenance(rr.BaselineState, rr.FirstSeen), i > 0))
+		out = append(out, teamsFinding(teamsRow{
+			Glyph:  sign(rr.Action),
+			Colour: teamsActionColor(rr.Action),
+			Title:  "**" + teamsText(rr.Address) + "**",
+			Where:  teamsWhere(rr),
+			Detail: teamsAttrDetail(rr),
+			Badge:  teamsBadge(rr.Action),
+			Prov:   teamsProvenance(rr.BaselineState, rr.FirstSeen),
+			Sep:    i > 0,
+		}))
 	}
 	return out
+}
+
+// teamsBadge capitalises a category word for the right-hand column ("update" ->
+// "Update"). Plan actions and severities are ASCII, so a byte swap is enough.
+func teamsBadge(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// teamsWhere is the tab's Module column: the module path when the resource is in
+// one, else the .tf that declares it.
+func teamsWhere(rr ResourceReport) string {
+	if rr.Module != "" {
+		return teamsText(rr.Module)
+	}
+	if rr.File == "" {
+		return ""
+	}
+	if rr.Line > 0 {
+		return teamsText(fmt.Sprintf("%s:%d", rr.File, rr.Line))
+	}
+	return teamsText(rr.File)
 }
 
 // teamsAttrDetail is the sub-line under a drifted resource: the first couple of
@@ -355,16 +420,20 @@ func teamsDeprItems(depr []Deprecation, max int) []acElement {
 		if sev == "error" {
 			glyph, colour = "✖", "Attention"
 		}
-		var detail []string
+		var detail string
 		if d.Detail != "" {
-			detail = append(detail, teamsText(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200)))
+			detail = teamsText(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200))
 		}
-		if s := teamsSites(d); s != "" {
-			detail = append(detail, s)
-		}
-		out = append(out, teamsFinding(
-			glyph, colour, "**"+teamsText(d.Summary)+"**", strings.Join(detail, "\n\n"),
-			teamsProvenance(d.BaselineState, d.FirstSeen), i > 0))
+		out = append(out, teamsFinding(teamsRow{
+			Glyph:  glyph,
+			Colour: colour,
+			Title:  "**" + teamsText(d.Summary) + "**",
+			Where:  teamsSites(d),
+			Detail: detail,
+			Badge:  teamsBadge(sev),
+			Prov:   teamsProvenance(d.BaselineState, d.FirstSeen),
+			Sep:    i > 0,
+		}))
 	}
 	return out
 }
@@ -389,6 +458,49 @@ func teamsSites(d Deprecation) string {
 		seen = append(seen, teamsText(label))
 	}
 	return strings.Join(seen, ", ")
+}
+
+// teamsIgnoredItems lists suppressed drift with the reason and the rule that
+// matched — the same three things the run tab's Ignored table shows.
+func teamsIgnoredItems(drift []ResourceReport, max int) []acElement {
+	out := make([]acElement, 0, max+1)
+	for i, rr := range drift {
+		if i == max {
+			out = append(out, teamsMoreItem(len(drift)-max, "resource"))
+			break
+		}
+		out = append(out, teamsFinding(teamsRow{
+			Glyph:  "🔕",
+			Colour: "Default",
+			Title:  "**" + teamsText(rr.Address) + "**",
+			Where:  teamsWhere(rr),
+			Detail: teamsText(reasonOr(rr.SuppressReason)),
+			Badge:  teamsBadge(rr.Action),
+			Prov:   teamsText(rr.SuppressSrc),
+			Sep:    i > 0,
+		}))
+	}
+	return out
+}
+
+func teamsIgnoredDeprItems(depr []Deprecation, max int) []acElement {
+	out := make([]acElement, 0, max+1)
+	for i, d := range depr {
+		if i == max {
+			out = append(out, teamsMoreItem(len(depr)-max, "deprecation"))
+			break
+		}
+		out = append(out, teamsFinding(teamsRow{
+			Glyph:  "🔕",
+			Colour: "Default",
+			Title:  "**" + teamsText(d.Summary) + "**",
+			Where:  teamsSites(d),
+			Detail: teamsText(reasonOr(d.SuppressReason)),
+			Prov:   teamsText(d.SuppressSrc),
+			Sep:    i > 0,
+		}))
+	}
+	return out
 }
 
 func teamsMoreItem(n int, noun string) acElement {
@@ -439,20 +551,21 @@ type adaptiveCard struct {
 // each one actually sets. IsVisible is a pointer because "false" is meaningful
 // and must survive omitempty.
 type acElement struct {
-	Type      string   `json:"type"`
-	ID        string   `json:"id,omitempty"`
-	Text      string   `json:"text,omitempty"`
-	Weight    string   `json:"weight,omitempty"`
-	Size      string   `json:"size,omitempty"`
-	Color     string   `json:"color,omitempty"`
-	Style     string   `json:"style,omitempty"`
-	Wrap      bool     `json:"wrap,omitempty"`
-	Spacing   string   `json:"spacing,omitempty"`
-	IsSubtle  bool     `json:"isSubtle,omitempty"`
-	Separator bool     `json:"separator,omitempty"`
-	Bleed     bool     `json:"bleed,omitempty"`
-	IsVisible *bool    `json:"isVisible,omitempty"`
-	Facts     []acFact `json:"facts,omitempty"`
+	Type                string   `json:"type"`
+	ID                  string   `json:"id,omitempty"`
+	Text                string   `json:"text,omitempty"`
+	Weight              string   `json:"weight,omitempty"`
+	Size                string   `json:"size,omitempty"`
+	Color               string   `json:"color,omitempty"`
+	Style               string   `json:"style,omitempty"`
+	Wrap                bool     `json:"wrap,omitempty"`
+	Spacing             string   `json:"spacing,omitempty"`
+	IsSubtle            bool     `json:"isSubtle,omitempty"`
+	Separator           bool     `json:"separator,omitempty"`
+	Bleed               bool     `json:"bleed,omitempty"`
+	HorizontalAlignment string   `json:"horizontalAlignment,omitempty"`
+	IsVisible           *bool    `json:"isVisible,omitempty"`
+	Facts               []acFact `json:"facts,omitempty"`
 
 	Items        []acElement `json:"items,omitempty"`   // Container
 	Columns      []acColumn  `json:"columns,omitempty"` // ColumnSet
