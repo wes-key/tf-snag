@@ -23,14 +23,19 @@
   --tfd-add: #107c10;
   --tfd-del: #c50f1f;
 
-  /* highlight for the changed span inside a From/To value */
-  --tfd-diff-del: rgba(200, 40, 40, 0.26);
-  --tfd-diff-add: rgba(16, 124, 16, 0.26);
+  /* Highlight for the changed span inside a From/To value. Deliberately NOT the
+     red/green of the surrounding text: an amber wash reads as "this is the bit
+     that moved" while the text colour keeps saying which side is which. */
+  --tfd-diff-hl: rgba(255, 191, 0, 0.32);
+  --tfd-diff-hl-bd: rgba(158, 108, 0, 0.55);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
     --tfd-hover: rgba(255, 255, 255, 0.06);
+    /* keep the host's accent when it sets one, but fall back to a light blue -
+       the light-mode #0067b8 fallback is unreadable on a dark surface */
+    --tfd-accent: var(--communication-foreground, #4da3ff);
     --tfd-add: #4ec94e;
     --tfd-del: #ff8a8a;
     --tfd-warn-bd: #e0a63f;
@@ -38,8 +43,10 @@
     --tfd-warn-bg: rgba(224, 166, 63, 0.20);
     --tfd-err-bg: rgba(255, 138, 138, 0.16);
     --tfd-info-bg: rgba(90, 170, 255, 0.16);
-    --tfd-diff-del: rgba(255, 138, 138, 0.32);
-    --tfd-diff-add: rgba(78, 201, 78, 0.30);
+    /* lower alpha than light mode: the wash lifts the dark surface, and too much
+       of it drops the light red/green value text below AA contrast */
+    --tfd-diff-hl: rgba(255, 199, 64, 0.18);
+    --tfd-diff-hl-bd: rgba(255, 199, 64, 0.55);
   }
 }
 
@@ -167,24 +174,16 @@ a.tfd-loc:hover { text-decoration: underline; }
 .tfd-attrs code { word-break: break-all; }
 .tfd-old { color: var(--tfd-del); }
 .tfd-new { color: var(--tfd-add); }
+/* One amber highlight on both sides, distinct from the red/green value text, so
+   the changed span stands out without competing with the from/to colouring. The
+   hairline keeps it visible when the wash is faint over a dark surface. */
 .tfd-attrs mark.tfd-diff {
   color: inherit;
+  background: var(--tfd-diff-hl);
+  box-shadow: inset 0 0 0 1px var(--tfd-diff-hl-bd);
   border-radius: 2px;
   padding: 0 1px;
 }
-.tfd-old mark.tfd-diff { background: var(--tfd-diff-del); }
-.tfd-new mark.tfd-diff { background: var(--tfd-diff-add); }
-
-/* provenance pill */
-.tfd-pill {
-  display: inline-block;
-  padding: 0 7px;
-  border-radius: 9px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 17px;
-}
-.tfd-pill-new { background: var(--tfd-accent); color: #ffffff; }
 
 /* category badge (change action, deprecation severity). The 1px border in the
    text colour keeps the shape crisp when the tinted background is faint —
@@ -208,6 +207,10 @@ a.tfd-loc:hover { text-decoration: underline; }
 .tfd-badge-error    { background: var(--tfd-err-bg);   color: var(--tfd-del); }
 .tfd-badge-noop,
 .tfd-badge-read     { background: var(--tfd-hover);    color: var(--tfd-muted); }
+/* "new" provenance. Tinted-and-outlined like the others rather than a solid
+   accent fill: white-on-accent went muddy against the dark theme's lighter
+   blue, and this keeps every pill in the row visually consistent. */
+.tfd-badge-new      { background: var(--tfd-info-bg);  color: var(--tfd-accent); }
 
 /* deprecation severity glyph (sits in the shared sign column) */
 .tfd-sev { color: var(--tfd-warn-bd); }
