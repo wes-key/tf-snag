@@ -125,10 +125,23 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tf-snag: -plan-log-dir set but -check does not include deprecations")
 		return 2
 	}
-	// -baseline also applies with any format when posting to Teams: the card
-	// marks new findings and -teams-notify new gates on them.
-	if *baseline != "" && *format != "sarif" && *format != "json" && *format != "teams" && *teamsHook == "" {
-		fmt.Fprintln(stderr, "tf-snag: -baseline applies to -format sarif, json or teams, or with -teams-webhook")
+	notify, err := parseTeamsNotify(*teamsNotify)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	// The webhook URL is a credential; prefer the environment so it never has to
+	// appear in a command line (or a pipeline log). Resolved before the -baseline
+	// check below, which has to know whether a card is being posted at all.
+	hook := *teamsHook
+	if hook == "" {
+		hook = os.Getenv("TF_SNAG_TEAMS_WEBHOOK")
+	}
+
+	// -baseline applies with any format when a card is being posted: it is what
+	// marks findings new, and what -teams-notify new gates on.
+	if *baseline != "" && *format != "sarif" && *format != "json" && *format != "teams" && hook == "" {
+		fmt.Fprintln(stderr, "tf-snag: -baseline applies to -format sarif, json or teams, or when posting to Teams")
 		return 2
 	}
 	if *planPath != "" && !driftOn {
@@ -138,18 +151,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if driftOn && *planPath == "" && deprOn && *planLogPath == "" {
 		fmt.Fprintln(stderr, "tf-snag: cannot read both the plan and the plan log from stdin; pass -plan or -plan-log")
 		return 2
-	}
-
-	notify, err := parseTeamsNotify(*teamsNotify)
-	if err != nil {
-		fmt.Fprintln(stderr, "tf-snag:", err)
-		return 2
-	}
-	// The webhook URL is a credential; prefer the environment so it never has to
-	// appear in a command line (or a pipeline log).
-	hook := *teamsHook
-	if hook == "" {
-		hook = os.Getenv("TF_SNAG_TEAMS_WEBHOOK")
 	}
 
 	var useColor bool

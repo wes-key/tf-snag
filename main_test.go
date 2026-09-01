@@ -619,6 +619,42 @@ func TestRunTeamsNotifyNew(t *testing.T) {
 	}
 }
 
+// The pipeline supplies the webhook through the environment and leaves -format
+// at its default, so -baseline has to be accepted on that combination too — the
+// guard must consult the resolved webhook, not just the flag.
+func TestRunTeamsBaselineWithEnvWebhookAndDefaultFormat(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	t.Setenv("TF_SNAG_TEAMS_WEBHOOK", srv.URL)
+
+	prevOut := &bytes.Buffer{}
+	if code := run([]string{"-format", "sarif", "-exit-code=false"},
+		strings.NewReader(cleanPlanJSON), prevOut, &bytes.Buffer{}); code != 0 {
+		t.Fatal("could not build a baseline")
+	}
+	prev := filepath.Join(t.TempDir(), "prev.sarif")
+	if err := os.WriteFile(prev, prevOut.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-baseline", prev, "-teams-notify", "new", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if strings.Contains(errb.String(), "-baseline applies to") {
+		t.Errorf("-baseline rejected despite a webhook in the environment: %s", errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 (the drift is new against a clean baseline)", posts)
+	}
+}
+
 // Without a baseline "new" cannot mean anything; falling silent would be the
 // worst outcome, so it degrades to "findings" and says so.
 func TestRunTeamsNotifyNewWithoutBaselineFallsBack(t *testing.T) {
