@@ -323,7 +323,7 @@
   // from the previous run, otherwise the first-detection date + age. Empty when
   // the run had no -baseline (baseline_state / first_seen unset).
   function provCell(row) {
-    if (row.baseline_state === "new") return el("span", { class: "tfd-pill tfd-pill-new", text: "new" });
+    if (row.baseline_state === "new") return badge("new", "new");
     var t = ageText(row.first_seen);
     return el("span", { class: "tfd-muted", text: t || "—" });
   }
