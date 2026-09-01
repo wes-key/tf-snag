@@ -71,6 +71,32 @@
 .tfd-section > .tfd-banner { margin-bottom: 10px; }
 .tfd-section > .tfd-banner strong { font-size: 13px; }
 
+/* pivot: one tab per finding kind, mirroring the Azure DevOps tab strip */
+.tfd-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--tfd-border);
+  margin-bottom: 16px;
+}
+.tfd-tab {
+  appearance: none;
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  padding: 7px 12px;
+  font: inherit;
+  font-weight: 600;
+  color: var(--tfd-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tfd-tab:hover { color: var(--tfd-fg); background: var(--tfd-hover); }
+.tfd-tab:focus-visible { outline: 1px solid var(--tfd-accent); outline-offset: -2px; }
+.tfd-tab-active { color: var(--tfd-fg); border-bottom-color: var(--tfd-accent); }
+/* the last section in a panel needs no trailing gap - the panel ends there */
+.tfd-panel > div > .tfd-section:last-child { margin-bottom: 0; }
+
 .tfd-section { margin-bottom: 22px; }
 .tfd-h3 {
   font-size: 12px;
