@@ -219,6 +219,41 @@ func (r *Report) HasGatingFindings() bool {
 	return false
 }
 
+// HasNewFindings reports whether any un-suppressed finding was absent from the
+// previous run. Meaningful only after PriorResults.StampReport: with no
+// -baseline nothing is stamped and this is always false, so callers must treat
+// "not baselined" as "cannot tell" rather than as "nothing new" — see
+// IsBaselined.
+func (r *Report) HasNewFindings() bool {
+	for i := range r.Drift {
+		if !r.Drift[i].Suppressed && r.Drift[i].BaselineState == "new" {
+			return true
+		}
+	}
+	for i := range r.Deprecations {
+		if !r.Deprecations[i].Suppressed && r.Deprecations[i].BaselineState == "new" {
+			return true
+		}
+	}
+	return false
+}
+
+// IsBaselined reports whether this report has been diffed against a previous
+// run, i.e. whether baseline_state / first_seen mean anything.
+func (r *Report) IsBaselined() bool {
+	for i := range r.Drift {
+		if r.Drift[i].BaselineState != "" {
+			return true
+		}
+	}
+	for i := range r.Deprecations {
+		if r.Deprecations[i].BaselineState != "" {
+			return true
+		}
+	}
+	return false
+}
+
 // gatingDrift / gatingDeprecations return the findings that count toward the
 // gate; suppressed ones are split out for the "ignored" sections.
 func (r *Report) gatingDrift() (gating, ignored []ResourceReport) {

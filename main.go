@@ -85,7 +85,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif`/`json` then stamps each result new/updated (sarif also emits absent)")
 	ignorePath := fs.String("ignore", "", "tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd or -source); suppressed findings stay in the report but do not trip -exit-code")
 	teamsHook := fs.String("teams-webhook", "", "Microsoft Teams Power Automate Workflows `url` to POST the report card to (default: $TF_SNAG_TEAMS_WEBHOOK). Treat as a secret")
-	teamsNotify := fs.String("teams-notify", "findings", "when to post to Teams: `findings` (only when something un-suppressed was found) or always")
+	teamsNotify := fs.String("teams-notify", "findings", "when to post to Teams: `findings` (anything un-suppressed), new (only findings absent from -baseline) or always")
 	teamsContext := fs.String("teams-context", "", "subtle `line` under the Teams card headline, e.g. the pipeline, branch and run number")
 	teamsRunURL := fs.String("teams-run-url", "", "`url` for the Teams card's \"View run\" button")
 	showVersion := fs.Bool("version", false, "print version and exit")
@@ -125,8 +125,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tf-snag: -plan-log-dir set but -check does not include deprecations")
 		return 2
 	}
-	if *baseline != "" && *format != "sarif" && *format != "json" {
-		fmt.Fprintln(stderr, "tf-snag: -baseline applies to -format sarif or json")
+	// -baseline also applies with any format when posting to Teams: the card
+	// marks new findings and -teams-notify new gates on them.
+	if *baseline != "" && *format != "sarif" && *format != "json" && *format != "teams" && *teamsHook == "" {
+		fmt.Fprintln(stderr, "tf-snag: -baseline applies to -format sarif, json or teams, or with -teams-webhook")
 		return 2
 	}
 	if *planPath != "" && !driftOn {
@@ -138,7 +140,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	teamsAlways, err := parseTeamsNotify(*teamsNotify)
+	notify, err := parseTeamsNotify(*teamsNotify)
 	if err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
 		return 2
@@ -215,6 +217,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	teamsOpts := report.TeamsOptions{Context: *teamsContext, RunURL: *teamsRunURL}
 
+	// Read the baseline once. Stamping the report is what gives the JSON and the
+	// Teams card their new/updated + first-seen marks; WriteSARIF takes the same
+	// prior and stamps its results itself (and re-emits what has gone absent).
+	var prior *report.PriorResults
+	if *baseline != "" {
+		var code int
+		if prior, code = loadPrior(*baseline, stderr); code != 0 {
+			return code
+		}
+		prior.StampReport(rep)
+	}
+
 	switch *format {
 	case "text":
 		if useColor {
@@ -231,13 +245,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 			rep.AttachSourceLocations(srcIndex)
 		}
-		if *baseline != "" {
-			prior, code := loadPrior(*baseline, stderr)
-			if code != 0 {
-				return code
-			}
-			prior.StampReport(rep)
-		}
 		err = rep.WriteJSON(stdout)
 	case "markdown", "md":
 		err = rep.WriteMarkdown(stdout)
@@ -250,13 +257,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			if err != nil {
 				fmt.Fprintln(stderr, "tf-snag:", err)
 				return 2
-			}
-		}
-		var prior *report.PriorResults
-		if *baseline != "" {
-			var code int
-			if prior, code = loadPrior(*baseline, stderr); code != 0 {
-				return code
 			}
 		}
 		err = rep.WriteSARIF(stdout, srcIndex, prior)
@@ -272,7 +272,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	if hook != "" {
-		if code := postTeams(rep, hook, teamsOpts, teamsAlways, stderr); code != 0 {
+		if code := postTeams(rep, hook, teamsOpts, notify, stderr); code != 0 {
 			return code
 		}
 	}
@@ -313,22 +313,42 @@ func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Write
 	return 0
 }
 
-// parseTeamsNotify turns -teams-notify into "post even when clean".
-func parseTeamsNotify(s string) (always bool, err error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "findings", "":
-		return false, nil
-	case "always":
-		return true, nil
+// parseTeamsNotify validates -teams-notify and normalises the empty value.
+func parseTeamsNotify(s string) (string, error) {
+	switch v := strings.ToLower(strings.TrimSpace(s)); v {
+	case "":
+		return "findings", nil
+	case "findings", "always", "new":
+		return v, nil
+	default:
+		return "", fmt.Errorf("invalid -teams-notify %q (want findings, new or always)", s)
 	}
-	return false, fmt.Errorf("invalid -teams-notify %q (want findings or always)", s)
 }
 
-// postTeams sends the report card to the webhook, unless -teams-notify is
-// "findings" and there is nothing un-suppressed to report. A failure to post is
-// a hard error: a notification silently not arriving is worse than a loud one.
-func postTeams(rep *report.Report, hook string, opts report.TeamsOptions, always bool, stderr io.Writer) int {
-	if !always && !rep.HasGatingFindings() {
+// teamsShouldPost applies -teams-notify. "new" needs a -baseline to tell a fresh
+// finding from one that has been there for weeks; without one it falls back to
+// "findings" rather than going silent, because a notifier that quietly never
+// fires is the worst failure mode available to it.
+func teamsShouldPost(rep *report.Report, notify string, stderr io.Writer) bool {
+	switch notify {
+	case "always":
+		return true
+	case "new":
+		if !rep.IsBaselined() {
+			fmt.Fprintln(stderr, "tf-snag: -teams-notify new needs -baseline to identify new findings; posting as -teams-notify findings would")
+			return rep.HasGatingFindings()
+		}
+		return rep.HasNewFindings()
+	default: // findings
+		return rep.HasGatingFindings()
+	}
+}
+
+// postTeams sends the report card to the webhook when -teams-notify says this
+// run warrants one. A failure to post is a hard error: a notification silently
+// not arriving is worse than a loud one.
+func postTeams(rep *report.Report, hook string, opts report.TeamsOptions, notify string, stderr io.Writer) int {
+	if !teamsShouldPost(rep, notify, stderr) {
 		return 0
 	}
 	var buf bytes.Buffer

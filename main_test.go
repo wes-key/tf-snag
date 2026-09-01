@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -560,7 +561,84 @@ func TestRunTeamsNotifyRejectsGarbage(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	if !strings.Contains(errb.String(), "findings or always") {
+	if !strings.Contains(errb.String(), "findings, new or always") {
 		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+// -teams-notify new posts only for findings absent from the baseline.
+func TestRunTeamsNotifyNew(t *testing.T) {
+	var posts int
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	// A baseline that already knows about this exact drift: nothing is new.
+	prevOut := &bytes.Buffer{}
+	if code := run([]string{"-format", "sarif", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), prevOut, &bytes.Buffer{}); code != 0 {
+		t.Fatal("could not build a baseline")
+	}
+	prev := filepath.Join(t.TempDir(), "prev.sarif")
+	if err := os.WriteFile(prev, prevOut.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-teams-notify", "new",
+		"-baseline", prev, "-exit-code=false"}, strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 0 {
+		t.Errorf("posts = %d, want 0 — the drift was already in the baseline", posts)
+	}
+
+	// Drift the baseline has never seen: post, and mark it new on the card.
+	newPlan := strings.ReplaceAll(driftPlanJSON, "azurerm_storage_account.data", "azurerm_storage_account.fresh")
+	out.Reset()
+	errb.Reset()
+	code = run([]string{"-teams-webhook", srv.URL, "-teams-notify", "new",
+		"-baseline", prev, "-exit-code=false"}, strings.NewReader(newPlan), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1 for a finding absent from the baseline", posts)
+	}
+	if !strings.Contains(body, "new since the last run") {
+		t.Errorf("card should mark the finding as new:\n%s", body)
+	}
+	if !strings.Contains(body, `"title": "New"`) {
+		t.Errorf("card should carry a New fact:\n%s", body)
+	}
+}
+
+// Without a baseline "new" cannot mean anything; falling silent would be the
+// worst outcome, so it degrades to "findings" and says so.
+func TestRunTeamsNotifyNewWithoutBaselineFallsBack(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-teams-notify", "new", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 (fall back rather than go silent)", posts)
+	}
+	if !strings.Contains(errb.String(), "needs -baseline") {
+		t.Errorf("stderr should explain the fallback: %q", errb.String())
 	}
 }

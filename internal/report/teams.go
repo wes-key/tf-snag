@@ -82,11 +82,15 @@ func (r *Report) teamsPayload(opts TeamsOptions) teamsMessage {
 
 	// Each kind gets a collapsible group. Collapsed by default: the counts above
 	// are the at-a-glance view, and a channel post should not be a wall of text.
+	// New findings lead, so with the list capped it is the things that appeared
+	// since the last run that survive the cut.
 	if len(drift) > 0 {
+		drift = teamsNewFirst(drift, func(rr ResourceReport) bool { return rr.BaselineState == "new" })
 		body = append(body, teamsGroup("drift", "Changed outside Terraform", len(drift),
 			teamsDriftItems(drift, max))...)
 	}
 	if len(depr) > 0 {
+		depr = teamsNewFirst(depr, func(d Deprecation) bool { return d.BaselineState == "new" })
 		body = append(body, teamsGroup("depr", "Deprecations", len(depr),
 			teamsDeprItems(depr, max))...)
 	}
@@ -193,13 +197,19 @@ func teamsGroup(id, title string, count int, items []acElement) []acElement {
 }
 
 // teamsFinding is one row inside a group: a coloured glyph in a narrow column,
-// then the title and its detail.
-func teamsFinding(glyph, colour, title, detail string, separator bool) acElement {
+// then the title, its detail, and (when baselined) how long it has been there.
+func teamsFinding(glyph, colour, title, detail, prov string, separator bool) acElement {
 	lines := []acElement{{Type: "TextBlock", Text: title, Wrap: true}}
 	if detail != "" {
 		lines = append(lines, acElement{
 			Type: "TextBlock", Text: detail,
 			Wrap: true, IsSubtle: true, Spacing: "None",
+		})
+	}
+	if prov != "" {
+		lines = append(lines, acElement{
+			Type: "TextBlock", Text: prov,
+			Wrap: true, IsSubtle: true, Size: "Small", Spacing: "None",
 		})
 	}
 	return acElement{
@@ -223,6 +233,14 @@ func (r *Report) teamsFacts(drift []ResourceReport, depr []Deprecation, ignored 
 		{Title: "Drift", Value: teamsCount(len(drift), driftBreakdown(drift))},
 		{Title: "Deprecations", Value: fmt.Sprintf("%d", len(depr))},
 	}
+	// Only meaningful when the run was given a -baseline to diff against.
+	if r.IsBaselined() {
+		n := teamsCountNew(drift, depr)
+		facts = append(facts, acFact{
+			Title: "New",
+			Value: fmt.Sprintf("%d since the last run", n),
+		})
+	}
 	if ignored > 0 {
 		facts = append(facts, acFact{Title: "Ignored", Value: fmt.Sprintf("%d (suppressed by a rule)", ignored)})
 	}
@@ -243,6 +261,51 @@ func teamsCount(n int, detail string) string {
 	return fmt.Sprintf("%d (%s)", n, detail)
 }
 
+func teamsCountNew(drift []ResourceReport, depr []Deprecation) int {
+	n := 0
+	for _, rr := range drift {
+		if rr.BaselineState == "new" {
+			n++
+		}
+	}
+	for _, d := range depr {
+		if d.BaselineState == "new" {
+			n++
+		}
+	}
+	return n
+}
+
+// teamsNewFirst reorders findings so new ones lead, preserving the relative
+// order within each half.
+func teamsNewFirst[T any](items []T, isNew func(T) bool) []T {
+	out := make([]T, 0, len(items))
+	for _, it := range items {
+		if isNew(it) {
+			out = append(out, it)
+		}
+	}
+	for _, it := range items {
+		if !isNew(it) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// teamsProvenance is the sub-line telling a reader whether this finding is new
+// or has been sitting there. Empty when the run had no -baseline.
+func teamsProvenance(state, firstSeen string) string {
+	if state == "new" {
+		return "🆕 new since the last run"
+	}
+	// ageParens is " (first seen …)" — unwrap it for use as a standalone line.
+	if a := strings.Trim(ageParens(firstSeen), " ()"); a != "" {
+		return a
+	}
+	return ""
+}
+
 func teamsDriftItems(drift []ResourceReport, max int) []acElement {
 	out := make([]acElement, 0, max+1)
 	for i, rr := range drift {
@@ -255,7 +318,8 @@ func teamsDriftItems(drift []ResourceReport, max int) []acElement {
 			title += " _(" + teamsText(rr.Module) + ")_"
 		}
 		out = append(out, teamsFinding(
-			sign(rr.Action), teamsActionColor(rr.Action), title, teamsAttrDetail(rr), i > 0))
+			sign(rr.Action), teamsActionColor(rr.Action), title, teamsAttrDetail(rr),
+			teamsProvenance(rr.BaselineState, rr.FirstSeen), i > 0))
 	}
 	return out
 }
@@ -299,7 +363,8 @@ func teamsDeprItems(depr []Deprecation, max int) []acElement {
 			detail = append(detail, s)
 		}
 		out = append(out, teamsFinding(
-			glyph, colour, "**"+teamsText(d.Summary)+"**", strings.Join(detail, "\n\n"), i > 0))
+			glyph, colour, "**"+teamsText(d.Summary)+"**", strings.Join(detail, "\n\n"),
+			teamsProvenance(d.BaselineState, d.FirstSeen), i > 0))
 	}
 	return out
 }

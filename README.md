@@ -71,14 +71,15 @@ tf-snag -plan plan.json [flags]
   -source dir         Terraform source dir; sarif/json findings carry the .tf
                       file+line declaring each resource (best effort, first
                       match wins)
-  -baseline file      previous run's tf-snag.sarif; with -format sarif or json,
-                      stamps each result new / updated (sarif also emits absent)
+  -baseline file      previous run's tf-snag.sarif; stamps each finding new /
+                      updated for -format sarif, json and the Teams card (sarif
+                      also re-emits what has gone absent)
   -ignore file        tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd
                       or -source); matched findings are suppressed, not gated
   -teams-webhook url  Teams Power Automate Workflows URL to POST the card to
                       (default: $TF_SNAG_TEAMS_WEBHOOK). Treat as a secret
-  -teams-notify when  findings (only when something un-suppressed was found) or
-                      always (default "findings")
+  -teams-notify when  findings (anything un-suppressed), new (only findings
+                      absent from -baseline) or always (default "findings")
   -teams-context line subtle line under the card headline, e.g. pipeline,
                       branch and run number
   -teams-run-url url  target for the card's "View run" button
@@ -254,10 +255,28 @@ detail stays folded away until someone wants it. Inside a group each finding
 gets its plan sign in the matching colour (green create, red delete, amber
 update) with the attribute changes beneath.
 
-The channel only hears from it when there is something un-suppressed to report;
-pass `-teams-notify always` to confirm on every run that the check ran at all.
 Ignored findings are never listed — they are summarised as an "Ignored" count so
 the card stays about what needs attention.
+
+**When it posts** — `-teams-notify`:
+
+| | |
+|---|---|
+| `findings` (default) | whenever anything un-suppressed was found |
+| `new` | only when a finding was **absent from `-baseline`** |
+| `always` | every run, clean or not — use it to prove the webhook works |
+
+`new` is the one that matters on a schedule. Drift nobody has fixed is still
+drift, but re-posting the same card every morning is how a channel learns to
+ignore an alert; `new` stays quiet until something actually appears. It needs
+`-baseline` to tell a fresh finding from a long-standing one — without one it
+falls back to `findings` and says so on stderr, because a notifier that quietly
+never fires is the worst failure mode available to it.
+
+Given `-baseline`, the card also marks each finding: new ones sort to the top,
+carry a 🆕 line, and are counted in a "New" fact; everything else shows how long
+it has been there ("first seen 2026-08-20, 13 days ago"). Since new findings
+lead, they are the ones that survive the per-section cap.
 
 **Setting up the webhook.** Microsoft has retired the Office 365 connectors
 ("Incoming Webhook"), so tf-snag targets their replacement, a **Power Automate
