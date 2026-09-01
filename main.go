@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"github.com/wes-key/tf-snag/internal/ignore"
 	"github.com/wes-key/tf-snag/internal/plan"
 	"github.com/wes-key/tf-snag/internal/report"
+	"github.com/wes-key/tf-snag/internal/teams"
 )
 
 // version is stamped by the build with -ldflags "-X main.version=<v>" (see
@@ -76,12 +78,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	planLogPath := fs.String("plan-log", "", "path to `terraform plan -json` NDJSON log (required by -check deprecations)")
 	planLogDir := fs.String("plan-log-dir", "", "directory `terraform plan` ran in, relative to the repo root; prepended to deprecation file locations so their links resolve")
 	checks := fs.String("check", "drift", "analyses to run: drift, deprecations, or a comma `list` (also: all)")
-	format := fs.String("format", "text", "output format: text, json, markdown, junit or sarif")
+	format := fs.String("format", "text", "output format: text, json, markdown, junit, sarif or teams")
 	exitCode := fs.Bool("exit-code", true, "exit 2 when drift or a deprecation is detected")
 	color := fs.String("color", "auto", "colorize text output: auto, always or never")
 	source := fs.String("source", "", "Terraform source `dir`; when set, sarif/json findings carry the .tf file+line declaring each resource")
 	baseline := fs.String("baseline", "", "previous run's tf-snag.sarif; `-format sarif`/`json` then stamps each result new/updated (sarif also emits absent)")
 	ignorePath := fs.String("ignore", "", "tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd or -source); suppressed findings stay in the report but do not trip -exit-code")
+	teamsHook := fs.String("teams-webhook", "", "Microsoft Teams Power Automate Workflows `url` to POST the report card to (default: $TF_SNAG_TEAMS_WEBHOOK). Treat as a secret")
+	teamsNotify := fs.String("teams-notify", "findings", "when to post to Teams: `findings` (only when something un-suppressed was found) or always")
+	teamsContext := fs.String("teams-context", "", "subtle `line` under the Teams card headline, e.g. the pipeline, branch and run number")
+	teamsRunURL := fs.String("teams-run-url", "", "`url` for the Teams card's \"View run\" button")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: terraform show -json PLANFILE | tf-snag [flags]")
@@ -103,12 +109,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	switch {
-	case !deprOn, *format == "sarif", *format == "text", *format == "markdown", *format == "md", *format == "json":
+	case !deprOn, *format == "sarif", *format == "text", *format == "markdown", *format == "md",
+		*format == "json", *format == "teams":
 		// deprecations are carried by these formats
 	default:
-		fmt.Fprintln(stderr, "tf-snag: -check deprecations supports -format sarif, json, text or markdown only")
+		fmt.Fprintln(stderr, "tf-snag: -check deprecations supports -format sarif, json, teams, text or markdown only")
 		return 2
 	}
+
 	if *planLogPath != "" && !deprOn {
 		fmt.Fprintln(stderr, "tf-snag: -plan-log set but -check does not include deprecations")
 		return 2
@@ -128,6 +136,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if driftOn && *planPath == "" && deprOn && *planLogPath == "" {
 		fmt.Fprintln(stderr, "tf-snag: cannot read both the plan and the plan log from stdin; pass -plan or -plan-log")
 		return 2
+	}
+
+	teamsAlways, err := parseTeamsNotify(*teamsNotify)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	// The webhook URL is a credential; prefer the environment so it never has to
+	// appear in a command line (or a pipeline log).
+	hook := *teamsHook
+	if hook == "" {
+		hook = os.Getenv("TF_SNAG_TEAMS_WEBHOOK")
 	}
 
 	var useColor bool
@@ -193,6 +213,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return code
 	}
 
+	teamsOpts := report.TeamsOptions{Context: *teamsContext, RunURL: *teamsRunURL}
+
 	switch *format {
 	case "text":
 		if useColor {
@@ -238,13 +260,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			}
 		}
 		err = rep.WriteSARIF(stdout, srcIndex, prior)
+	case "teams":
+		err = rep.WriteTeams(stdout, teamsOpts)
 	default:
-		fmt.Fprintf(stderr, "tf-snag: unknown format %q (want text, json, markdown, junit or sarif)\n", *format)
+		fmt.Fprintf(stderr, "tf-snag: unknown format %q (want text, json, markdown, junit, sarif or teams)\n", *format)
 		return 2
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
 		return 2
+	}
+
+	if hook != "" {
+		if code := postTeams(rep, hook, teamsOpts, teamsAlways, stderr); code != 0 {
+			return code
+		}
 	}
 
 	if *exitCode && rep.HasGatingFindings() {
@@ -280,6 +310,36 @@ func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Write
 	}
 
 	set.Apply(rep)
+	return 0
+}
+
+// parseTeamsNotify turns -teams-notify into "post even when clean".
+func parseTeamsNotify(s string) (always bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "findings", "":
+		return false, nil
+	case "always":
+		return true, nil
+	}
+	return false, fmt.Errorf("invalid -teams-notify %q (want findings or always)", s)
+}
+
+// postTeams sends the report card to the webhook, unless -teams-notify is
+// "findings" and there is nothing un-suppressed to report. A failure to post is
+// a hard error: a notification silently not arriving is worse than a loud one.
+func postTeams(rep *report.Report, hook string, opts report.TeamsOptions, always bool, stderr io.Writer) int {
+	if !always && !rep.HasGatingFindings() {
+		return 0
+	}
+	var buf bytes.Buffer
+	if err := rep.WriteTeams(&buf, opts); err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	if err := (&teams.Client{}).Post(hook, buf.Bytes()); err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
 	return 0
 }
 

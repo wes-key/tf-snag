@@ -65,7 +65,8 @@ tf-snag -plan plan.json [flags]
                       links resolve
   -check list         analyses to run: drift, deprecations, or a comma list
                       (also: all) (default "drift")
-  -format string      text | json | markdown | junit | sarif (default "text")
+  -format string      text | json | markdown | junit | sarif | teams
+                      (default "text")
   -color string       colorize text output: auto | always | never (default "auto")
   -source dir         Terraform source dir; sarif/json findings carry the .tf
                       file+line declaring each resource (best effort, first
@@ -74,6 +75,13 @@ tf-snag -plan plan.json [flags]
                       stamps each result new / updated (sarif also emits absent)
   -ignore file        tf-snag ignore YAML (default: .tf-snag-ignore.yml in cwd
                       or -source); matched findings are suppressed, not gated
+  -teams-webhook url  Teams Power Automate Workflows URL to POST the card to
+                      (default: $TF_SNAG_TEAMS_WEBHOOK). Treat as a secret
+  -teams-notify when  findings (only when something un-suppressed was found) or
+                      always (default "findings")
+  -teams-context line subtle line under the card headline, e.g. pipeline,
+                      branch and run number
+  -teams-run-url url  target for the card's "View run" button
   -exit-code          exit 2 when an un-suppressed drift or deprecation is
                       detected (default true)
   -version            print version and exit
@@ -100,7 +108,8 @@ Formats: `text` for humans/console, `json` for the tf-snag run-tab extension
 suppression, `-baseline` provenance, and per-drift `file`/`line` with `-source`),
 `markdown` for
 `##vso[task.uploadsummary]`, `sarif` for the "SARIF SAST Scans Tab" extension,
-`junit` for `PublishTestResults@2`. Resources created/destroyed outside
+`junit` for `PublishTestResults@2`, `teams` for a Microsoft Teams Adaptive Card
+(see below). Resources created/destroyed outside
 Terraform are summarised in one line rather than diffed attribute-by-attribute
 against null. Pending changes appear in `text`, `json` and `markdown` only.
 Deprecations (`-check deprecations`) appear in
@@ -225,6 +234,53 @@ resource "azurerm_signalr_service" "legacy" {
 optional. Inline rules are emitted as SARIF suppression `kind: "inSource"`, file
 rules as `"external"`.
 
+## Microsoft Teams
+
+tf-snag can post the run's findings to a Teams channel as an
+[Adaptive Card](https://adaptivecards.io):
+
+```
+tf-snag -check all -plan plan.json -plan-log plan.jsonl \
+  -teams-context "nightly-drift · main · run 20260901.3" \
+  -teams-run-url "$RUN_URL"
+```
+
+The channel only hears from it when there is something un-suppressed to report;
+pass `-teams-notify always` to confirm on every run that the check ran at all.
+Ignored findings are never listed — they are summarised as an "Ignored" count so
+the card stays about what needs attention.
+
+**Setting up the webhook.** Microsoft has retired the Office 365 connectors
+("Incoming Webhook"), so tf-snag targets their replacement, a **Power Automate
+Workflows** trigger. In Teams: channel **⋯ → Workflows → "Post to a channel when
+a webhook request is received"**, pick the team and channel, and copy the HTTP
+POST URL it generates. The legacy MessageCard shape is deliberately not
+supported.
+
+**The URL is a credential** — anyone holding it can post to the channel. Prefer
+the environment over a command line, which ends up in process listings and CI
+logs:
+
+```yaml
+- script: tf-snag -check all -plan plan.json -plan-log plan.jsonl
+  env:
+    TF_SNAG_TEAMS_WEBHOOK: $(TEAMS_WEBHOOK)   # secret pipeline variable
+```
+
+`-teams-webhook` takes precedence over `$TF_SNAG_TEAMS_WEBHOOK`. The URL is
+stripped from any error tf-snag prints, so a failure is safe to log.
+
+A failed POST exits 2 with the status and response body on stderr — a
+notification you believe is going out but is not is worse than a loud failure.
+Retries are automatic on 429/5xx and connection errors (three attempts, 1s then
+2s, honouring `Retry-After`).
+
+`-format teams` writes the same card to stdout instead of posting it, which is
+how you inspect or diff the payload; the two can be combined to log exactly what
+was sent. Cards are capped at five findings per section (and two attribute
+changes per resource) with an "…and N more" line, so a large drift set cannot
+blow past the webhook's payload limit.
+
 ## Azure DevOps
 
 The scheduled job in `../tf-drift-test-resources/pipelines/tf-snag.yml` plans
@@ -275,11 +331,11 @@ tab (`PublishTestResults@2`); the scheduled pipeline uses the Scans tab instead.
 
 ## Status
 
-Early. Parser + text/JSON/markdown/JUnit/SARIF report + exit codes, covered by
-tests. Deprecation check (`-check deprecations`, from the `terraform plan -json`
-log) surfaces in SARIF, JSON, text and markdown. Ignore rules (file + inline)
-and `-baseline` provenance flow into JSON (schema 2). Scans-tab, Summary and the
-tf-snag run tab (`extension/`) integrations are live.
+Early. Parser + text/JSON/markdown/JUnit/SARIF/Teams report + exit codes, covered
+by tests. Deprecation check (`-check deprecations`, from the `terraform plan
+-json` log) surfaces in SARIF, JSON, Teams, text and markdown. Ignore rules (file
++ inline) and `-baseline` provenance flow into JSON (schema 2). Scans-tab,
+Summary, the tf-snag run tab (`extension/`) and Teams notifications are live.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
 `main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,

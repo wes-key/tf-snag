@@ -3,11 +3,22 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+// The Teams webhook is picked up from the environment, so a developer (or an
+// agent) with TF_SNAG_TEAMS_WEBHOOK exported would otherwise have every test
+// here try to post. Tests that want it set it themselves with t.Setenv.
+func TestMain(m *testing.M) {
+	os.Unsetenv("TF_SNAG_TEAMS_WEBHOOK")
+	os.Exit(m.Run())
+}
 
 func TestRunWithPlanFileReportsDriftAndExits2(t *testing.T) {
 	var out, errb bytes.Buffer
@@ -248,7 +259,7 @@ func TestRunDeprecationsRejectsJUnitFormat(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	if !strings.Contains(errb.String(), "sarif, json, text or markdown") {
+	if !strings.Contains(errb.String(), "sarif, json, teams, text or markdown") {
 		t.Errorf("stderr = %q", errb.String())
 	}
 }
@@ -409,5 +420,147 @@ func TestRunJSONSourceLocations(t *testing.T) {
 	}
 	if len(doc.Drift) != 1 || doc.Drift[0].File != "main.tf" || doc.Drift[0].Line != 6 {
 		t.Errorf("drift[0] file/line = %q/%d, want main.tf/6 (%+v)", doc.Drift[0].File, doc.Drift[0].Line, doc.Drift)
+	}
+}
+
+// --- Teams --------------------------------------------------------------
+
+const driftPlanJSON = `{"format_version":"1.2","terraform_version":"1.9.6","resource_drift":[` +
+	`{"address":"azurerm_storage_account.data","type":"azurerm_storage_account",` +
+	`"change":{"actions":["update"],"before":{"min_tls_version":"TLS1_2"},"after":{"min_tls_version":"TLS1_0"}}}],` +
+	`"resource_changes":[]}`
+
+const cleanPlanJSON = `{"format_version":"1.2","terraform_version":"1.9.6","resource_drift":[],"resource_changes":[]}`
+
+func TestRunFormatTeamsWritesCard(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-format", "teams", "-teams-context", "nightly · main",
+		"-teams-run-url", "https://example.invalid/run/1", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	var doc struct {
+		Type        string `json:"type"`
+		Attachments []struct {
+			ContentType string `json:"contentType"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("output not JSON: %v\n%s", err, out.String())
+	}
+	if doc.Type != "message" || len(doc.Attachments) != 1 {
+		t.Errorf("not a Workflows message payload: %s", out.String())
+	}
+	for _, want := range []string{"nightly", "https://example.invalid/run/1", "AdaptiveCard"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("card missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// -teams-webhook posts the card, and by default only when something was found.
+func TestRunTeamsWebhookPostsOnFindings(t *testing.T) {
+	var posts int
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1", posts)
+	}
+	if !strings.Contains(body, "changed outside Terraform") {
+		t.Errorf("posted card looks wrong:\n%s", body)
+	}
+	// The default format still writes its own output.
+	if !strings.Contains(out.String(), "azurerm_storage_account.data") {
+		t.Errorf("text report missing:\n%s", out.String())
+	}
+}
+
+func TestRunTeamsWebhookQuietWhenClean(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"-teams-webhook", srv.URL}, strings.NewReader(cleanPlanJSON), &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 0 {
+		t.Errorf("posts = %d, want 0 (nothing to report)", posts)
+	}
+
+	// ...unless asked to post every run.
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"-teams-webhook", srv.URL, "-teams-notify", "always"},
+		strings.NewReader(cleanPlanJSON), &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 with -teams-notify always", posts)
+	}
+}
+
+// The webhook can come from the environment so it never lands in a command line.
+func TestRunTeamsWebhookFromEnv(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("TF_SNAG_TEAMS_WEBHOOK", srv.URL)
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"-exit-code=false"}, strings.NewReader(driftPlanJSON), &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 from $TF_SNAG_TEAMS_WEBHOOK", posts)
+	}
+}
+
+// A notification that silently fails to arrive is worse than a loud failure.
+func TestRunTeamsPostFailureIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no such flow", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "404") {
+		t.Errorf("stderr should explain the failure: %s", errb.String())
+	}
+}
+
+func TestRunTeamsNotifyRejectsGarbage(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-notify", "sometimes"}, strings.NewReader(cleanPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "findings or always") {
+		t.Errorf("stderr = %q", errb.String())
 	}
 }
