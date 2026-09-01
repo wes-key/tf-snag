@@ -257,11 +257,12 @@ Where each lands on the run page:
 | **Scans** tab | `sarif` + `CodeAnalysisLogs` artifact | the "SARIF SAST Scans Tab" extension installed in the org |
 | **Summary** tab section | `markdown` + `task.uploadsummary` | nothing (built in) |
 
-The tf-snag tab (schema 2) shows drift, deprecations, an "Ignored" section, and
-per-finding first-seen provenance — the same coverage as the Scans tab, in the
-org's own theme. The scheduled pipeline in `../tf-snag-test-resources` uses it as
-the sole surface; `../tf-drift-test-resources` still exercises the Scans/Summary
-path.
+The tf-snag tab (schema 2) splits findings across a **Drift** / **Deprecations** /
+**Pending changes** pivot, each tab carrying its count, its own collapsed
+"Ignored" group, and per-finding first-seen provenance — the same coverage as the
+Scans tab, in the org's own theme. The scheduled pipeline in
+`../tf-snag-test-resources` uses it as the sole surface;
+`../tf-drift-test-resources` still exercises the Scans/Summary path.
 
 `junit` is still emitted by the tool for anyone who prefers the built-in Tests
 tab (`PublishTestResults@2`); the scheduled pipeline uses the Scans tab instead.

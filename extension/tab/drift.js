@@ -179,42 +179,111 @@
       el("div", { class: "tfd-muted", text: metaLine(report, pending, ignoredDrift.length + ignoredDeps.length, build) })
     ]));
 
-    r.appendChild(section("Changed outside Terraform", activeDrift, {
-      headers: ["Resource", "Module", "Change"],
-      emptyText: "Nothing has changed outside Terraform for this run.",
-      row: driftRowFn(linker)
-    }));
-
-    r.appendChild(section("Deprecations", activeDeps, {
-      headers: ["Deprecation", "Resource", "Severity"],
-      emptyText: "No deprecation warnings in the plan.",
-      row: deprRowFn(linker)
-    }));
-
+    // One pivot tab per finding kind, each owning its own "ignored" group.
+    var driftPanel = el("div", null, [
+      section("Changed outside Terraform", activeDrift, {
+        headers: ["Resource", "Module", "Change"],
+        emptyText: "Nothing has changed outside Terraform for this run.",
+        row: driftRowFn(linker)
+      })
+    ]);
     if (ignoredDrift.length) {
-      r.appendChild(collapsedSection("Ignored drift", ignoredDrift, {
+      driftPanel.appendChild(collapsedSection("Ignored drift", ignoredDrift, {
         headers: ["Resource", "Module", "Change", "Reason"],
         row: ignoredDriftRowFn(linker)
       }));
     }
+
+    var deprPanel = el("div", null, [
+      section("Deprecations", activeDeps, {
+        headers: ["Deprecation", "Resource", "Severity"],
+        emptyText: "No deprecation warnings in the plan.",
+        row: deprRowFn(linker)
+      })
+    ]);
     if (ignoredDeps.length) {
-      r.appendChild(collapsedSection("Ignored deprecations", ignoredDeps, {
+      deprPanel.appendChild(collapsedSection("Ignored deprecations", ignoredDeps, {
         headers: ["Deprecation", "Resource", "Reason"],
         row: ignoredDeprRowFn(linker)
       }));
     }
 
-    r.appendChild(section("Pending changes from configuration", pending, {
-      headers: ["Resource", "Module", "Change"],
-      emptyText: "No pending changes — configuration matches state.",
-      infoHead: "Unapplied config changes",
-      infoText: "Updates to the Terraform configuration that have not been applied yet — " +
-        "a terraform apply would enact them. Shown for context: this is not drift " +
-        "(a change made outside Terraform), and the drift check does not gate on it.",
-      row: driftRowFn(null)
-    }));
+    var pendingPanel = el("div", null, [
+      section("Pending changes from configuration", pending, {
+        headers: ["Resource", "Module", "Change"],
+        emptyText: "No pending changes — configuration matches state.",
+        infoHead: "Unapplied config changes",
+        infoText: "Updates to the Terraform configuration that have not been applied yet — " +
+          "a terraform apply would enact them. Shown for context: this is not drift " +
+          "(a change made outside Terraform), and the drift check does not gate on it.",
+        row: driftRowFn(null)
+      })
+    ]);
+
+    r.appendChild(tabView([
+      { label: "Drift", count: activeDrift.length, body: driftPanel },
+      { label: "Deprecations", count: activeDeps.length, body: deprPanel },
+      { label: "Pending changes", count: pending.length, body: pendingPanel }
+    ]));
 
     resize();
+  }
+
+  // --- tab strip (pivot) ------------------------------------------
+
+  // tabView renders an Azure DevOps-style pivot: a tablist of buttons over one
+  // panel each. Every panel is built up front (a report is small) and hidden
+  // rather than re-rendered, so expanded rows survive tab switches.
+  // tabs: [{ label, count, body:Node }]. Opens on the first tab that has
+  // findings, so a run whose only findings are deprecations doesn't land on an
+  // empty Drift tab.
+  function tabView(tabs) {
+    var strip = el("div", { class: "tfd-tabs", role: "tablist" });
+    var panels = el("div", { class: "tfd-panels" });
+    var btns = [], pans = [];
+
+    function select(i) {
+      btns.forEach(function (b, j) {
+        var on = i === j;
+        b.className = "tfd-tab" + (on ? " tfd-tab-active" : "");
+        b.setAttribute("aria-selected", on ? "true" : "false");
+        b.setAttribute("tabindex", on ? "0" : "-1");
+        pans[j].className = "tfd-panel" + (on ? "" : " tfd-hidden");
+      });
+      resize();
+    }
+
+    tabs.forEach(function (t, i) {
+      var id = "tfd-tab-" + i;
+      var btn = el("button", { class: "tfd-tab", type: "button", role: "tab", id: id }, [
+        t.label, el("span", { class: "tfd-count", text: String(t.count) })
+      ]);
+      btn.addEventListener("click", function () { select(i); });
+      btn.addEventListener("keydown", function (e) {
+        var n = null;
+        if (e.key === "ArrowRight") n = (i + 1) % tabs.length;
+        else if (e.key === "ArrowLeft") n = (i - 1 + tabs.length) % tabs.length;
+        else if (e.key === "Home") n = 0;
+        else if (e.key === "End") n = tabs.length - 1;
+        if (n === null) return;
+        e.preventDefault();
+        select(n);
+        btns[n].focus();
+      });
+      btns.push(btn);
+      strip.appendChild(btn);
+
+      pans.push(el("div", { class: "tfd-panel", role: "tabpanel", "aria-labelledby": id }, [t.body]));
+      panels.appendChild(pans[i]);
+    });
+
+    var initial = 0;
+    for (var k = 0; k < tabs.length; k++) {
+      if (tabs[k].count) { initial = k; break; }
+    }
+    select(initial);
+
+    return el("div", { class: "tfd-tabview" }, [strip, panels]);
   }
 
   function isSuppressed(x) { return !!x.suppressed; }

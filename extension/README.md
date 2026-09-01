@@ -2,17 +2,21 @@
 
 Adds a **tf-snag** tab to the pipeline run summary (next to Tests, Code Coverage,
 Trivy, Mend, …) that renders the report produced by the
-[`tf-snag`](../README.md) CLI:
+[`tf-snag`](../README.md) CLI.
 
-- resources Terraform found changed **outside** Terraform, with the exact
-  attribute diffs (`min_tls_version: "TLS1_2" → "TLS1_0"`);
-- deprecation warnings from the plan;
-- findings suppressed by an ignore rule, in a collapsed **Ignored** section
-  (count in the heading, click to expand — reason + rule);
-- per-finding **first seen** provenance when the pipeline passes `-baseline`
-  (a "new" pill, or a date + age);
-- pending changes from configuration, for context;
-- a status banner and an add/change/destroy tally.
+A run-level status banner sits at the top, and the findings are split across a
+pivot of three tabs, each labelled with its count:
+
+| Tab | Shows |
+|---|---|
+| **Drift** | resources Terraform found changed **outside** Terraform, with the exact attribute diffs (`min_tls_version: "TLS1_2" → "TLS1_0"`), plus a collapsed **Ignored drift** group |
+| **Deprecations** | deprecation warnings from the plan, plus a collapsed **Ignored deprecations** group |
+| **Pending changes** | config changes not yet applied, for context |
+
+The tab opens on the first pivot that has findings. Ignored groups show the
+suppression reason and the rule that matched. When the pipeline passes
+`-baseline`, every finding carries **first seen** provenance (a "new" pill, or a
+date + age).
 
 Drift and deprecations use the same table layout, and each expandable row links
 to the `.tf` that declares the resource (Azure Repos Git and GitHub), the same
@@ -105,10 +109,13 @@ needs a real build attachment and the `VSS` host). For quick DOM/CSS work, open
 1. Run **`tf-snag.yml`**. Confirm the drift step logs
    `##vso[task.addattachment …type=tf-snag.report…]`.
 2. Open the run → **tf-snag** tab.
-   - findings present → amber banner + "Changed outside Terraform" (rows
-     expandable to attribute diffs), "Deprecations", and — when an ignore rule
-     matched — an "Ignored" table;
+   - findings present → amber banner, and the **Drift** / **Deprecations** /
+     **Pending changes** pivot carries a count on each tab; rows expand to
+     attribute diffs or deprecation detail;
+   - an ignore rule matched → a collapsed "Ignored drift" / "Ignored
+     deprecations" group inside the matching tab;
+   - drift clean but deprecations present → the tab opens on **Deprecations**;
    - `-baseline` given → each row shows a "new" pill or a "first seen …" note;
-   - nothing → green banner, sections show their empty state;
+   - nothing → green banner, each tab shows its empty state;
    - no attachment (e.g. the plan step failed first) → neutral "No tf-snag
      report for this run".
