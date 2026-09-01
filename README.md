@@ -1,5 +1,9 @@
 # tf-snag
 
+[![CI](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml/badge.svg)](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml)
+[![Go](https://img.shields.io/badge/go-1.23-00ADD8?logo=go&logoColor=white)](go.mod)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 Reads `terraform show -json` output and tells you which resources changed
 **outside Terraform** — the storage account someone loosened in the portal, the
 tag a script stripped, the NSG rule added by hand.
