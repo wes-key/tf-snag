@@ -15,6 +15,13 @@ import (
 // Teams renders only a subset of Markdown inside a TextBlock: **bold**,
 // _italic_, [links](url) and lists. Backticks are NOT code-formatted, they show
 // literally, so resource addresses are bolded rather than quoted.
+//
+// Two limits worth knowing before reaching for a nicer layout:
+//   - Images must be PNG, JPG or GIF. An inline data:image/svg+xml URI renders
+//     as a broken-image icon, so badges cannot be drawn as SVG (verified).
+//   - There is no way to put white text on a solid colour: TextRun.highlight
+//     picks its background from the text colour, and no text element takes a
+//     background, border or corner radius at the versions Teams supports.
 
 // teamsCardVersion is the Adaptive Card schema version. 1.4 is the highest that
 // every current Teams surface (desktop, web, mobile) renders reliably.
