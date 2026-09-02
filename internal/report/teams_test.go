@@ -500,9 +500,13 @@ func TestWriteTeamsChips(t *testing.T) {
 		if in.Color != tc.colour {
 			t.Errorf("%q chip colour = %q, want %q", tc.text, in.Color, tc.colour)
 		}
-		// The padding spaces are what stop Teams hugging the text.
-		if !strings.HasPrefix(in.Text, " ") || !strings.HasSuffix(in.Text, " ") {
-			t.Errorf("%q chip lost its padding: %q", tc.text, in.Text)
+		// Padding must be non-breaking: ordinary spaces get trimmed at the run
+		// boundary and the chip collapses onto the text.
+		if !strings.HasPrefix(in.Text, chipPad) || !strings.HasSuffix(in.Text, chipPad) {
+			t.Errorf("%q chip lost its non-breaking padding: %q", tc.text, in.Text)
+		}
+		if strings.HasPrefix(in.Text, " ") || strings.HasSuffix(in.Text, " ") {
+			t.Errorf("%q chip padded with collapsible spaces: %q", tc.text, in.Text)
 		}
 	}
 

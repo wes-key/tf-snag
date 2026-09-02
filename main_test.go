@@ -612,8 +612,8 @@ func TestRunTeamsNotifyNew(t *testing.T) {
 		t.Fatalf("posts = %d, want 1 for a finding absent from the baseline", posts)
 	}
 	// Marked with a highlighted "New" chip, the card's version of the run tab's
-	// new pill.
-	if !strings.Contains(body, `"text": " New "`) || !strings.Contains(body, `"highlight": true`) {
+	// new pill. The padding is non-breaking, so match on the word alone.
+	if !strings.Contains(body, `New `) || !strings.Contains(body, `"highlight": true`) {
 		t.Errorf("card should mark the finding with a New chip:\n%s", body)
 	}
 	if !strings.Contains(body, `"title": "New"`) {

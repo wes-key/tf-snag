@@ -363,18 +363,23 @@ func teamsAge(firstSeen, runURL string) string {
 	return "[" + age + "](" + runURL + ")"
 }
 
+// chipPad is a non-breaking space. Ordinary spaces at the edges of a TextRun get
+// collapsed or trimmed by the renderer, which leaves the highlight hugging the
+// letters and reading as smudged text rather than a chip; U+00A0 survives.
+const chipPad = "  "
+
 // teamsChip is the card's answer to the run tab's pill badges: a TextRun with
 // highlight set, which Teams draws as a tinted background behind coloured text.
-// Adaptive Cards has no badge element (the 1.6 one is too new for Teams), and a
-// styled Container would be a full-width box rather than a chip. The padding
-// spaces are deliberate — highlight hugs the glyph run otherwise.
+// This is as close as Adaptive Cards 1.4 gets — there is no badge element (the
+// 1.6 one is too new for Teams), no border colour and no corner radius, and a
+// styled Container would be a full-width box rather than an inline chip.
 func teamsChip(text, colour, align string) acElement {
 	return acElement{
 		Type:                "RichTextBlock",
 		HorizontalAlignment: align,
 		Inlines: []acInline{{
 			Type:  "TextRun",
-			Text:  " " + text + " ",
+			Text:  chipPad + text + chipPad,
 			Color: colour,
 			// Body size, not Small: at Small the chip is barely legible against
 			// the resource name it sits beside.
