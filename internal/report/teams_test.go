@@ -511,3 +511,74 @@ func TestWriteTeamsChips(t *testing.T) {
 		t.Errorf("new finding should not also carry an age line:\n%s", body)
 	}
 }
+
+// The run that first surfaced a finding has to survive being written to SARIF
+// and read back, or the card cannot link to it on any later run.
+func TestFirstRunURLRoundTrips(t *testing.T) {
+	const run1 = "https://dev.azure.com/o/p/_build/results?buildId=1"
+	const run2 = "https://dev.azure.com/o/p/_build/results?buildId=2"
+
+	defer func(f func() string) { nowUTC = f }(nowUTC)
+	nowUTC = func() string { return "2026-08-20T00:00:00Z" }
+
+	drift := func() *Report {
+		return Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+			driftUpdate("azurerm_x.y", map[string]any{"v": 1}, map[string]any{"v": 2}),
+		}})
+	}
+
+	// Run 1: nothing to diff against, so the finding is new here.
+	empty, err := ParsePriorSARIF([]byte(`{"version":"2.1.0","runs":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty.RunURL = run1
+	var sarif1 bytes.Buffer
+	if err := drift().WriteSARIF(&sarif1, nil, empty); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sarif1.String(), run1) {
+		t.Fatalf("run 1 did not record itself as the first-detection run:\n%s", sarif1.String())
+	}
+
+	// Run 2: same finding, diffed against run 1's SARIF.
+	prior, err := ParsePriorSARIF(sarif1.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prior.RunURL = run2
+	r2 := drift()
+	prior.StampReport(r2)
+
+	if got := r2.Drift[0].BaselineState; got != "updated" {
+		t.Errorf("baseline state = %q, want updated", got)
+	}
+	if got := r2.Drift[0].FirstRunURL; got != run1 {
+		t.Errorf("first run url = %q, want run 1 (%q) carried forward, not this run", got, run1)
+	}
+
+	// ...and the card links the age to it rather than to this run.
+	doc, _ := parseTeams(t, r2, TeamsOptions{RunURL: run2})
+	body := bodyText(doc)
+	if !strings.Contains(body, "]("+run1+")") {
+		t.Errorf("age is not linked to the run that first saw it:\n%s", body)
+	}
+	if strings.Contains(body, "]("+run2+")") {
+		t.Errorf("age should not link to the current run:\n%s", body)
+	}
+}
+
+// A new finding needs no link: the card's own "View run" button is that run.
+func TestNewFindingHasNoAgeLink(t *testing.T) {
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"v": 1}, map[string]any{"v": 2}),
+	}})
+	r.Drift[0].BaselineState = "new"
+	r.Drift[0].FirstSeen = "2026-08-20T00:00:00Z"
+	r.Drift[0].FirstRunURL = "https://dev.azure.com/o/p/_build/results?buildId=9"
+
+	body := bodyText(mustParseTeams(t, r))
+	if strings.Contains(body, "first seen") {
+		t.Errorf("a new finding should show the New chip, not a linked age:\n%s", body)
+	}
+}

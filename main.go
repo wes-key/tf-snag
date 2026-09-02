@@ -87,7 +87,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	teamsHook := fs.String("teams-webhook", "", "Microsoft Teams Power Automate Workflows `url` to POST the report card to (default: $TF_SNAG_TEAMS_WEBHOOK). Treat as a secret")
 	teamsNotify := fs.String("teams-notify", "findings", "when to post to Teams: `findings` (anything un-suppressed), new (only findings absent from -baseline) or always")
 	teamsContext := fs.String("teams-context", "", "subtle `line` under the Teams card headline, e.g. the pipeline, branch and run number")
-	teamsRunURL := fs.String("teams-run-url", "", "`url` for the Teams card's \"View run\" button")
+	runURL := fs.String("run-url", "", "this CI run's `url`; recorded against findings first seen in this run (so later runs can link back) and used for the Teams card's \"View run\" button")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: terraform show -json PLANFILE | tf-snag [flags]")
@@ -216,7 +216,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	teamsOpts := report.TeamsOptions{Context: *teamsContext, RunURL: *teamsRunURL}
+	teamsOpts := report.TeamsOptions{Context: *teamsContext, RunURL: *runURL}
 
 	// Read the baseline once. Stamping the report is what gives the JSON and the
 	// Teams card their new/updated + first-seen marks; WriteSARIF takes the same
@@ -227,6 +227,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if prior, code = loadPrior(*baseline, stderr); code != 0 {
 			return code
 		}
+		// Anything absent from the baseline is being seen for the first time
+		// here, so this run is its first-detection run from now on.
+		prior.RunURL = *runURL
 		prior.StampReport(rep)
 	}
 

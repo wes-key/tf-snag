@@ -348,11 +348,19 @@ func teamsNewFirst[T any](items []T, isNew func(T) bool) []T {
 	return out
 }
 
-// teamsAge is the "first seen …" note for a finding carried over from the
-// previous run. Empty when the run had no -baseline.
-func teamsAge(firstSeen string) string {
+// teamsAge is the "first seen …" note for a finding carried over from a previous
+// run, linked to the run that first surfaced it when that is known. Empty when
+// the run had no -baseline.
+//
+// Only carried-over findings get this: a new one was first seen by the run the
+// card's own "View run" button already points at.
+func teamsAge(firstSeen, runURL string) string {
 	// ageParens is " (first seen …)" — unwrap it for use as a standalone line.
-	return strings.Trim(ageParens(firstSeen), " ()")
+	age := strings.Trim(ageParens(firstSeen), " ()")
+	if age == "" || runURL == "" {
+		return age
+	}
+	return "[" + age + "](" + runURL + ")"
 }
 
 // teamsChip is the card's answer to the run tab's pill badges: a TextRun with
@@ -391,7 +399,7 @@ func teamsDriftItems(drift []ResourceReport, max int) []acElement {
 			Detail: teamsAttrDetail(rr),
 			Badge:  teamsBadge(rr.Action),
 			New:    rr.BaselineState == "new",
-			Age:    teamsAge(rr.FirstSeen),
+			Age:    teamsAge(rr.FirstSeen, rr.FirstRunURL),
 			Sep:    i > 0,
 		}))
 	}
@@ -465,7 +473,7 @@ func teamsDeprItems(depr []Deprecation, max int) []acElement {
 			Detail: detail,
 			Badge:  teamsBadge(sev),
 			New:    d.BaselineState == "new",
-			Age:    teamsAge(d.FirstSeen),
+			Age:    teamsAge(d.FirstSeen, d.FirstRunURL),
 			Sep:    i > 0,
 		}))
 	}

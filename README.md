@@ -82,7 +82,9 @@ tf-snag -plan plan.json [flags]
                       absent from -baseline) or always (default "findings")
   -teams-context line subtle line under the card headline, e.g. pipeline,
                       branch and run number
-  -teams-run-url url  target for the card's "View run" button
+  -run-url url        this CI run's URL: recorded against findings first seen
+                      in this run so later ones can link back, and used for the
+                      Teams card's "View run" button
   -exit-code          exit 2 when an un-suppressed drift or deprecation is
                       detected (default true)
   -version            print version and exit
@@ -243,7 +245,7 @@ tf-snag can post the run's findings to a Teams channel as an
 ```
 tf-snag -check all -plan plan.json -plan-log plan.jsonl \
   -teams-context "nightly-drift · main · run 20260901.3" \
-  -teams-run-url "$RUN_URL"
+  -run-url "$RUN_URL"
 ```
 
 The card leads with a tinted banner carrying the verdict — red for drift, amber
@@ -277,6 +279,12 @@ Given `-baseline`, the card also marks each finding: new ones sort to the top an
 carry a **New** badge; everything else shows how long it has been there ("first
 seen 2026-08-20, 13 days ago"). Since new findings lead, they are the ones that
 survive the per-section cap.
+
+Pass **`-run-url`** and that age becomes a link to the run that first surfaced
+the finding. The URL is recorded against anything new in this run and travels
+forward with it, so on the tenth morning a long-standing drift still points at
+the run that caught it. New findings are not linked — the card's own "View run"
+button is already that run.
 
 The "New" fact counts them **relative to the previous check, not the previous
 message** — under `-teams-notify new` those are not the same thing, since a

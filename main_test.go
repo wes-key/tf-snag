@@ -436,7 +436,7 @@ const cleanPlanJSON = `{"format_version":"1.2","terraform_version":"1.9.6","reso
 func TestRunFormatTeamsWritesCard(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run([]string{"-format", "teams", "-teams-context", "nightly · main",
-		"-teams-run-url", "https://example.invalid/run/1", "-exit-code=false"},
+		"-run-url", "https://example.invalid/run/1", "-exit-code=false"},
 		strings.NewReader(driftPlanJSON), &out, &errb)
 	if code != 0 {
 		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())

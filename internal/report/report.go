@@ -51,6 +51,7 @@ type Deprecation struct {
 	// Set by PriorResults.StampReport when -baseline was given.
 	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
 	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
+	FirstRunURL   string `json:"first_run_url,omitempty"`  // the CI run that first surfaced it
 }
 
 // DeprecationSite is one place a deprecation fires — a resource address and,
@@ -112,6 +113,7 @@ type ResourceReport struct {
 	// Set by PriorResults.StampReport when -baseline was given.
 	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
 	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
+	FirstRunURL   string `json:"first_run_url,omitempty"`  // the CI run that first surfaced it
 }
 
 // AttachSourceLocations fills File/Line on each drift resource from src (keyed
@@ -741,6 +743,31 @@ type sarifResult struct {
 
 type sarifProvenance struct {
 	FirstDetectionTimeUtc string `json:"firstDetectionTimeUtc,omitempty"`
+	// Properties carries firstDetectionRunUrl — the CI run that first surfaced
+	// this finding. SARIF has firstDetectionRunGuid, but a guid is not something
+	// a reader can click, and the property bag is the sanctioned extension point.
+	Properties map[string]string `json:"properties,omitempty"`
+}
+
+// provFirstRunURL is the property key under which a result's first-detection run
+// URL travels between runs.
+const provFirstRunURL = "firstDetectionRunUrl"
+
+func (p *sarifProvenance) firstRunURL() string {
+	if p == nil {
+		return ""
+	}
+	return p.Properties[provFirstRunURL]
+}
+
+// newProvenance builds a provenance block, omitting the property bag when there
+// is no run URL to record.
+func newProvenance(firstSeen, runURL string) *sarifProvenance {
+	p := &sarifProvenance{FirstDetectionTimeUtc: firstSeen}
+	if runURL != "" {
+		p.Properties = map[string]string{provFirstRunURL: runURL}
+	}
+	return p
 }
 
 // sarifSuppression marks a result the user chose to ignore. kind "inSource" is
@@ -955,18 +982,23 @@ func resultGUID(kind, identity string) string {
 // — WriteSARIF then leaves baselineState unset.
 type PriorResults struct {
 	byKey map[string]*priorResult
+	// RunURL is this run's URL. A finding absent from the baseline is being seen
+	// for the first time here, so this is recorded as its first-detection run
+	// and travels forward with it on every run after.
+	RunURL string
 }
 
 type priorResult struct {
-	ruleID    string
-	level     string
-	message   string
-	loc       []sarifLocation
-	logloc    []sarifLogicalLoc
-	fp        map[string]string
-	guid      string
-	firstSeen string // provenance.firstDetectionTimeUtc, "" if the prior run had none
-	matched   bool
+	ruleID     string
+	level      string
+	message    string
+	loc        []sarifLocation
+	logloc     []sarifLogicalLoc
+	fp         map[string]string
+	guid       string
+	firstSeen  string // provenance.firstDetectionTimeUtc, "" if the prior run had none
+	firstRunID string // provenance properties firstDetectionRunUrl
+	matched    bool
 }
 
 // ParsePriorSARIF reads a tf-snag SARIF log (a previous run's tf-snag.sarif) so
@@ -989,14 +1021,15 @@ func ParsePriorSARIF(raw []byte) (*PriorResults, error) {
 				firstSeen = res.Provenance.FirstDetectionTimeUtc
 			}
 			pr.byKey[resultKey(res)] = &priorResult{
-				ruleID:    res.RuleID,
-				level:     res.Level,
-				message:   stripAge(res.Message.Text),
-				loc:       res.Locations,
-				logloc:    res.LogicalLocations,
-				fp:        res.PartialFingerprints,
-				guid:      res.GUID,
-				firstSeen: firstSeen,
+				ruleID:     res.RuleID,
+				level:      res.Level,
+				message:    stripAge(res.Message.Text),
+				loc:        res.Locations,
+				logloc:     res.LogicalLocations,
+				fp:         res.PartialFingerprints,
+				guid:       res.GUID,
+				firstSeen:  firstSeen,
+				firstRunID: res.Provenance.firstRunURL(),
 			}
 		}
 	}
@@ -1039,17 +1072,19 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 	if !ok {
 		now := nowUTC()
 		res.BaselineState = "new"
-		res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: now}
+		res.Provenance = newProvenance(now, pr.RunURL)
 		res.Message.Text = withAge(res.Message.Text, now)
 		return
 	}
 	p.matched = true
 	res.BaselineState = "updated"
-	seen := p.firstSeen
+	seen, runURL := p.firstSeen, p.firstRunID
 	if seen == "" {
-		seen = nowUTC() // prior run predates provenance tracking
+		// Prior run predates provenance tracking: this is the earliest sighting
+		// we can attest to, so claim it rather than inventing a history.
+		seen, runURL = nowUTC(), pr.RunURL
 	}
-	res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: seen}
+	res.Provenance = newProvenance(seen, runURL)
 	res.Message.Text = withAge(res.Message.Text, seen)
 }
 
@@ -1065,26 +1100,29 @@ func (pr *PriorResults) StampReport(r *Report) {
 	}
 	now := nowUTC()
 	for i := range r.Drift {
-		st, seen := pr.matchGUID(resultGUID("resource-drift", r.Drift[i].Address))
+		st, seen, runURL := pr.matchGUID(resultGUID("resource-drift", r.Drift[i].Address))
 		r.Drift[i].BaselineState = st
 		r.Drift[i].FirstSeen = firstOr(seen, now)
+		r.Drift[i].FirstRunURL = firstOr(runURL, pr.RunURL)
 	}
 	for i := range r.Deprecations {
-		st, seen := pr.matchGUID(resultGUID("deprecation", r.Deprecations[i].key()))
+		st, seen, runURL := pr.matchGUID(resultGUID("deprecation", r.Deprecations[i].key()))
 		r.Deprecations[i].BaselineState = st
 		r.Deprecations[i].FirstSeen = firstOr(seen, now)
+		r.Deprecations[i].FirstRunURL = firstOr(runURL, pr.RunURL)
 	}
 }
 
 // matchGUID looks a finding up by the guid key ParsePriorSARIF stores under
-// ("g:"+guid) and reports its baseline state and prior first-seen time.
-func (pr *PriorResults) matchGUID(guid string) (state, firstSeen string) {
+// ("g:"+guid) and reports its baseline state, prior first-seen time and the run
+// that first surfaced it.
+func (pr *PriorResults) matchGUID(guid string) (state, firstSeen, firstRunURL string) {
 	p, ok := pr.byKey["g:"+guid]
 	if !ok {
-		return "new", ""
+		return "new", "", ""
 	}
 	p.matched = true
-	return "updated", p.firstSeen
+	return "updated", p.firstSeen, p.firstRunID
 }
 
 func firstOr(v, fallback string) string {
@@ -1172,7 +1210,7 @@ func (pr *PriorResults) absent() []sarifResult {
 			PartialFingerprints: p.fp,
 		}
 		if p.firstSeen != "" {
-			res.Provenance = &sarifProvenance{FirstDetectionTimeUtc: p.firstSeen}
+			res.Provenance = newProvenance(p.firstSeen, p.firstRunID)
 			res.Message.Text = withAge(res.Message.Text, p.firstSeen)
 		}
 		out = append(out, res)
