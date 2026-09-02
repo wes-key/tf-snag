@@ -509,9 +509,9 @@ func TestWriteTeamsChips(t *testing.T) {
 	})
 
 	for _, tc := range []struct{ text, colour, block string }{
-		{"Update", "Warning", "🟧"},  // the drift action — orange
+		{"Update", "Warning", "🟨"},  // the drift action — yellow
 		{"New", "Accent", "🟦"},      // provenance — royal blue
-		{"Warning", "Warning", "🟧"}, // deprecation severity
+		{"Warning", "Warning", "🟨"}, // deprecation severity
 	} {
 		in, ok := chips[tc.text]
 		if !ok {

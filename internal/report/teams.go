@@ -383,8 +383,10 @@ const chipPad = "  "
 // desktop, web and mobile alike. It carries the colour; the highlighted label
 // beside it carries the word.
 var chipBlock = map[string]string{
-	"Good":      "🟩", // create
-	"Warning":   "🟧", // update, deprecation warning
+	"Good":    "🟩", // create
+	"Warning": "🟨", // update, deprecation warning — yellow, not orange: an
+	//                    orange block sits too close to the red one to tell
+	//                    apart at a glance in a channel
 	"Attention": "🟥", // delete, replace, error
 	"Accent":    "🟦", // new
 	"Default":   "⬛", // ignored / unknown
