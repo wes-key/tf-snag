@@ -3,11 +3,23 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+// The Teams webhook is picked up from the environment, so a developer (or an
+// agent) with TF_SNAG_TEAMS_WEBHOOK exported would otherwise have every test
+// here try to post. Tests that want it set it themselves with t.Setenv.
+func TestMain(m *testing.M) {
+	os.Unsetenv("TF_SNAG_TEAMS_WEBHOOK")
+	os.Exit(m.Run())
+}
 
 func TestRunWithPlanFileReportsDriftAndExits2(t *testing.T) {
 	var out, errb bytes.Buffer
@@ -248,7 +260,7 @@ func TestRunDeprecationsRejectsJUnitFormat(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
-	if !strings.Contains(errb.String(), "sarif, json, text or markdown") {
+	if !strings.Contains(errb.String(), "sarif, json, teams, text or markdown") {
 		t.Errorf("stderr = %q", errb.String())
 	}
 }
@@ -409,5 +421,262 @@ func TestRunJSONSourceLocations(t *testing.T) {
 	}
 	if len(doc.Drift) != 1 || doc.Drift[0].File != "main.tf" || doc.Drift[0].Line != 6 {
 		t.Errorf("drift[0] file/line = %q/%d, want main.tf/6 (%+v)", doc.Drift[0].File, doc.Drift[0].Line, doc.Drift)
+	}
+}
+
+// --- Teams --------------------------------------------------------------
+
+const driftPlanJSON = `{"format_version":"1.2","terraform_version":"1.9.6","resource_drift":[` +
+	`{"address":"azurerm_storage_account.data","type":"azurerm_storage_account",` +
+	`"change":{"actions":["update"],"before":{"min_tls_version":"TLS1_2"},"after":{"min_tls_version":"TLS1_0"}}}],` +
+	`"resource_changes":[]}`
+
+const cleanPlanJSON = `{"format_version":"1.2","terraform_version":"1.9.6","resource_drift":[],"resource_changes":[]}`
+
+func TestRunFormatTeamsWritesCard(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-format", "teams", "-teams-context", "nightly · main",
+		"-run-url", "https://example.invalid/run/1", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	var doc struct {
+		Type        string `json:"type"`
+		Attachments []struct {
+			ContentType string `json:"contentType"`
+		} `json:"attachments"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("output not JSON: %v\n%s", err, out.String())
+	}
+	if doc.Type != "message" || len(doc.Attachments) != 1 {
+		t.Errorf("not a Workflows message payload: %s", out.String())
+	}
+	for _, want := range []string{"nightly", "https://example.invalid/run/1", "AdaptiveCard"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("card missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+// -teams-webhook posts the card, and by default only when something was found.
+func TestRunTeamsWebhookPostsOnFindings(t *testing.T) {
+	var posts int
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1", posts)
+	}
+	if !strings.Contains(body, "changed outside Terraform") {
+		t.Errorf("posted card looks wrong:\n%s", body)
+	}
+	// The default format still writes its own output.
+	if !strings.Contains(out.String(), "azurerm_storage_account.data") {
+		t.Errorf("text report missing:\n%s", out.String())
+	}
+}
+
+func TestRunTeamsWebhookQuietWhenClean(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"-teams-webhook", srv.URL}, strings.NewReader(cleanPlanJSON), &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 0 {
+		t.Errorf("posts = %d, want 0 (nothing to report)", posts)
+	}
+
+	// ...unless asked to post every run.
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"-teams-webhook", srv.URL, "-teams-notify", "always"},
+		strings.NewReader(cleanPlanJSON), &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 with -teams-notify always", posts)
+	}
+}
+
+// The webhook can come from the environment so it never lands in a command line.
+func TestRunTeamsWebhookFromEnv(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	t.Setenv("TF_SNAG_TEAMS_WEBHOOK", srv.URL)
+
+	var out, errb bytes.Buffer
+	if code := run([]string{"-exit-code=false"}, strings.NewReader(driftPlanJSON), &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 from $TF_SNAG_TEAMS_WEBHOOK", posts)
+	}
+}
+
+// A notification that silently fails to arrive is worse than a loud failure.
+func TestRunTeamsPostFailureIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no such flow", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "404") {
+		t.Errorf("stderr should explain the failure: %s", errb.String())
+	}
+}
+
+func TestRunTeamsNotifyRejectsGarbage(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-notify", "sometimes"}, strings.NewReader(cleanPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "findings, new or always") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+// -teams-notify new posts only for findings absent from the baseline.
+func TestRunTeamsNotifyNew(t *testing.T) {
+	var posts int
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	// A baseline that already knows about this exact drift: nothing is new.
+	prevOut := &bytes.Buffer{}
+	if code := run([]string{"-format", "sarif", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), prevOut, &bytes.Buffer{}); code != 0 {
+		t.Fatal("could not build a baseline")
+	}
+	prev := filepath.Join(t.TempDir(), "prev.sarif")
+	if err := os.WriteFile(prev, prevOut.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-teams-notify", "new",
+		"-baseline", prev, "-exit-code=false"}, strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 0 {
+		t.Errorf("posts = %d, want 0 — the drift was already in the baseline", posts)
+	}
+
+	// Drift the baseline has never seen: post, and mark it new on the card.
+	newPlan := strings.ReplaceAll(driftPlanJSON, "azurerm_storage_account.data", "azurerm_storage_account.fresh")
+	out.Reset()
+	errb.Reset()
+	code = run([]string{"-teams-webhook", srv.URL, "-teams-notify", "new",
+		"-baseline", prev, "-exit-code=false"}, strings.NewReader(newPlan), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1 for a finding absent from the baseline", posts)
+	}
+	// Marked with a highlighted "New" chip, the card's version of the run tab's
+	// new pill. The padding is non-breaking, so match on the word alone.
+	if !strings.Contains(body, `New `) || !strings.Contains(body, `"highlight": true`) {
+		t.Errorf("card should mark the finding with a New chip:\n%s", body)
+	}
+	if !strings.Contains(body, `"title": "New"`) {
+		t.Errorf("card should carry a New fact:\n%s", body)
+	}
+}
+
+// The pipeline supplies the webhook through the environment and leaves -format
+// at its default, so -baseline has to be accepted on that combination too — the
+// guard must consult the resolved webhook, not just the flag.
+func TestRunTeamsBaselineWithEnvWebhookAndDefaultFormat(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+	t.Setenv("TF_SNAG_TEAMS_WEBHOOK", srv.URL)
+
+	prevOut := &bytes.Buffer{}
+	if code := run([]string{"-format", "sarif", "-exit-code=false"},
+		strings.NewReader(cleanPlanJSON), prevOut, &bytes.Buffer{}); code != 0 {
+		t.Fatal("could not build a baseline")
+	}
+	prev := filepath.Join(t.TempDir(), "prev.sarif")
+	if err := os.WriteFile(prev, prevOut.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-baseline", prev, "-teams-notify", "new", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if strings.Contains(errb.String(), "-baseline applies to") {
+		t.Errorf("-baseline rejected despite a webhook in the environment: %s", errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 (the drift is new against a clean baseline)", posts)
+	}
+}
+
+// Without a baseline "new" cannot mean anything; falling silent would be the
+// worst outcome, so it degrades to "findings" and says so.
+func TestRunTeamsNotifyNewWithoutBaselineFallsBack(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-teams-webhook", srv.URL, "-teams-notify", "new", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if posts != 1 {
+		t.Errorf("posts = %d, want 1 (fall back rather than go silent)", posts)
+	}
+	if !strings.Contains(errb.String(), "needs -baseline") {
+		t.Errorf("stderr should explain the fallback: %q", errb.String())
 	}
 }
