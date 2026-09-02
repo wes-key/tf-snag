@@ -280,12 +280,12 @@ func (r *Report) teamsFacts(drift []ResourceReport, depr []Deprecation, ignored 
 		{Title: "Deprecations", Value: fmt.Sprintf("%d", len(depr))},
 	}
 	// Only meaningful when the run was given a -baseline to diff against.
+	// Deliberately not "since the last run": under -teams-notify new the last
+	// card may be days old, so a reader cannot tell whether "the last run" means
+	// the previous check or the last message they saw. The baseline is always
+	// the previous check, so say what that makes each finding.
 	if r.IsBaselined() {
-		n := teamsCountNew(drift, depr)
-		facts = append(facts, acFact{
-			Title: "New",
-			Value: fmt.Sprintf("%d since the last run", n),
-		})
+		facts = append(facts, acFact{Title: "New", Value: teamsNewFact(teamsCountNew(drift, depr))})
 	}
 	if ignored > 0 {
 		facts = append(facts, acFact{Title: "Ignored", Value: fmt.Sprintf("%d (suppressed by a rule)", ignored)})
@@ -305,6 +305,15 @@ func teamsCount(n int, detail string) string {
 		return fmt.Sprintf("%d", n)
 	}
 	return fmt.Sprintf("%d (%s)", n, detail)
+}
+
+// teamsNewFact phrases the New count against the check, not against the last
+// notification — the two are the same thing only when every run posts.
+func teamsNewFact(n int) string {
+	if n == 0 {
+		return "none — everything here pre-dates this check"
+	}
+	return fmt.Sprintf("%d first detected in this check", n)
 }
 
 func teamsCountNew(drift []ResourceReport, depr []Deprecation) int {
@@ -356,11 +365,12 @@ func teamsChip(text, colour, align string) acElement {
 		Type:                "RichTextBlock",
 		HorizontalAlignment: align,
 		Inlines: []acInline{{
-			Type:      "TextRun",
-			Text:      " " + text + " ",
-			Color:     colour,
+			Type:  "TextRun",
+			Text:  " " + text + " ",
+			Color: colour,
+			// Body size, not Small: at Small the chip is barely legible against
+			// the resource name it sits beside.
 			Weight:    "Bolder",
-			Size:      "Small",
 			Highlight: true,
 		}},
 	}

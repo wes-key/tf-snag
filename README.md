@@ -273,10 +273,14 @@ ignore an alert; `new` stays quiet until something actually appears. It needs
 falls back to `findings` and says so on stderr, because a notifier that quietly
 never fires is the worst failure mode available to it.
 
-Given `-baseline`, the card also marks each finding: new ones sort to the top,
-carry a 🆕 line, and are counted in a "New" fact; everything else shows how long
-it has been there ("first seen 2026-08-20, 13 days ago"). Since new findings
-lead, they are the ones that survive the per-section cap.
+Given `-baseline`, the card also marks each finding: new ones sort to the top and
+carry a **New** badge; everything else shows how long it has been there ("first
+seen 2026-08-20, 13 days ago"). Since new findings lead, they are the ones that
+survive the per-section cap.
+
+The "New" fact counts them **relative to the previous check, not the previous
+message** — under `-teams-notify new` those are not the same thing, since a
+quiet week means no card at all.
 
 **Setting up the webhook.** Microsoft has retired the Office 365 connectors
 ("Incoming Webhook"), so tf-snag targets their replacement, a **Power Automate
