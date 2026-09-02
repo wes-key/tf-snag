@@ -375,24 +375,42 @@ func teamsAge(firstSeen, runURL string) string {
 // letters and reading as smudged text rather than a chip; U+00A0 survives.
 const chipPad = "  "
 
-// teamsChip is the card's answer to the run tab's pill badges: a TextRun with
-// highlight set, which Teams draws as a tinted background behind coloured text.
-// This is as close as Adaptive Cards 1.4 gets — there is no badge element (the
-// 1.6 one is too new for Teams), no border colour and no corner radius, and a
-// styled Container would be a full-width box rather than an inline chip.
+// chipBlock is the solid colour each category leads with. Teams will not render
+// a drawn badge (no SVG) and no text element takes a background colour, but a
+// Unicode block *is* solid colour and is plain text, so it always renders — on
+// desktop, web and mobile alike. It carries the colour; the highlighted label
+// beside it carries the word.
+var chipBlock = map[string]string{
+	"Good":      "🟩", // create
+	"Warning":   "🟧", // update, deprecation warning
+	"Attention": "🟥", // delete, replace, error
+	"Accent":    "🟦", // new
+	"Default":   "⬛", // ignored / unknown
+}
+
+// teamsChip renders a category badge: a solid colour block followed by the label
+// on a highlighted run. See the limits noted at the top of this file for why it
+// is not a drawn pill.
 func teamsChip(text, colour, align string) acElement {
+	label := acInline{
+		Type:  "TextRun",
+		Text:  chipPad + text + chipPad,
+		Color: colour,
+		// Body size, not Small: at Small the chip is barely legible against
+		// the resource name it sits beside.
+		Weight:    "Bolder",
+		Highlight: true,
+	}
+	inlines := []acInline{label}
+	if block, ok := chipBlock[colour]; ok {
+		// Separate run: the block must not take the label's highlight, or the
+		// colour reads as a smudge rather than a swatch.
+		inlines = []acInline{{Type: "TextRun", Text: block + " "}, label}
+	}
 	return acElement{
 		Type:                "RichTextBlock",
 		HorizontalAlignment: align,
-		Inlines: []acInline{{
-			Type:  "TextRun",
-			Text:  chipPad + text + chipPad,
-			Color: colour,
-			// Body size, not Small: at Small the chip is barely legible against
-			// the resource name it sits beside.
-			Weight:    "Bolder",
-			Highlight: true,
-		}},
+		Inlines:             inlines,
 	}
 }
 

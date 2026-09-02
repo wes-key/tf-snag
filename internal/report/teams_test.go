@@ -463,8 +463,9 @@ func TestWriteTeamsTrimsLongDetail(t *testing.T) {
 	}
 }
 
-// Category badges are RichTextBlock runs with highlight set — the card's stand-in
-// for the run tab's pill badges, since Adaptive Cards 1.4 has no badge element.
+// Category badges are a solid colour block plus a highlighted label. Teams will
+// not render a drawn pill (no SVG) and no text element takes a background
+// colour, so the block is what actually carries the colour.
 func TestWriteTeamsChips(t *testing.T) {
 	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
 		driftUpdate("azurerm_x.upd", map[string]any{"v": 1}, map[string]any{"v": 2}),
@@ -484,10 +485,19 @@ func TestWriteTeamsChips(t *testing.T) {
 		}
 	})
 
-	for _, tc := range []struct{ text, colour string }{
-		{"Update", "Warning"},  // the drift action
-		{"New", "Accent"},      // provenance
-		{"Warning", "Warning"}, // deprecation severity
+	// Each badge is two runs: the colour block, then the highlighted label.
+	blockBefore := map[string]string{}
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
+		if e.Type != "RichTextBlock" || len(e.Inlines) != 2 {
+			return
+		}
+		blockBefore[strings.TrimSpace(e.Inlines[1].Text)] = strings.TrimSpace(e.Inlines[0].Text)
+	})
+
+	for _, tc := range []struct{ text, colour, block string }{
+		{"Update", "Warning", "🟧"},  // the drift action — orange
+		{"New", "Accent", "🟦"},      // provenance — royal blue
+		{"Warning", "Warning", "🟧"}, // deprecation severity
 	} {
 		in, ok := chips[tc.text]
 		if !ok {
@@ -499,6 +509,14 @@ func TestWriteTeamsChips(t *testing.T) {
 		}
 		if in.Color != tc.colour {
 			t.Errorf("%q chip colour = %q, want %q", tc.text, in.Color, tc.colour)
+		}
+		if got := blockBefore[tc.text]; got != tc.block {
+			t.Errorf("%q badge leads with %q, want the %s block", tc.text, got, tc.block)
+		}
+		// The block must be its own run: highlighting it would smudge the colour
+		// rather than show a clean swatch.
+		if in.Text == tc.block+" "+in.Text {
+			t.Errorf("%q badge merged the block into the highlighted label", tc.text)
 		}
 		// Padding must be non-breaking: ordinary spaces get trimmed at the run
 		// boundary and the chip collapses onto the text.
