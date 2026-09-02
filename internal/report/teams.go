@@ -218,15 +218,15 @@ func teamsGroup(id, title string, count int, items []acElement) []acElement {
 // the resource and its detail, then a coloured category badge and how long the
 // finding has been around.
 type teamsRow struct {
-	Glyph  string // plan sign or severity glyph
-	Colour string // Adaptive Card colour for the glyph and the badge
-	Title  string // bold primary line (Markdown)
-	Where  string // module, or the .tf that declares it
-	Detail string // attribute changes / deprecation detail
-	Badge  string // "Update", "Warning", ... the tab's Change / Severity column
-	New    bool   // absent from the baseline — gets a chip, like the tab's pill
-	Age    string // "first seen ..." for anything carried over
-	Note   string // ignored rows: the rule that matched
+	Glyph  string     // plan sign or severity glyph
+	Colour string     // Adaptive Card colour for the glyph and the badge
+	Title  string     // bold primary line (Markdown)
+	Where  string     // module, or the .tf that declares it
+	Detail []acInline // attribute changes / deprecation detail, as coloured runs
+	Badge  string     // "Update", "Warning", ... the tab's Change / Severity column
+	New    bool       // absent from the baseline — gets a chip, like the tab's pill
+	Age    string     // "first seen ..." for anything carried over
+	Note   string     // ignored rows: the rule that matched
 	Sep    bool
 }
 
@@ -239,8 +239,10 @@ func teamsFinding(r teamsRow) acElement {
 	if r.Where != "" {
 		main = append(main, sub(r.Where, "Small"))
 	}
-	if r.Detail != "" {
-		main = append(main, sub(r.Detail, ""))
+	if len(r.Detail) > 0 {
+		// RichTextBlock rather than TextBlock so the before/after values can be
+		// coloured individually; it wraps by default.
+		main = append(main, acElement{Type: "RichTextBlock", Spacing: "None", Inlines: r.Detail})
 	}
 
 	// Right-hand column: the category chip over the provenance, mirroring the
@@ -461,22 +463,43 @@ func teamsWhere(rr ResourceReport) string {
 }
 
 // teamsAttrDetail is the sub-line under a drifted resource: the first couple of
-// attribute changes, or the one-line summary when there are none to show.
-func teamsAttrDetail(rr ResourceReport) string {
+// attribute changes, or the one-line summary when there are none to show. The
+// before value is red and the after green, as in the run tab's diff — the path
+// and punctuation stay subtle so the values are what the eye lands on.
+func teamsAttrDetail(rr ResourceReport) []acInline {
 	if len(rr.Attrs) == 0 {
-		return rr.summaryLine()
+		return teamsPlain(rr.summaryLine())
 	}
 	const shown = 2
-	parts := make([]string, 0, shown+1)
+	out := make([]acInline, 0, shown*4+1)
 	for i, a := range rr.Attrs {
 		if i == shown {
-			parts = append(parts, fmt.Sprintf("+%d more", len(rr.Attrs)-shown))
+			out = append(out, acInline{
+				Type: "TextRun", IsSubtle: true,
+				Text: fmt.Sprintf(";  +%d more", len(rr.Attrs)-shown),
+			})
 			break
 		}
-		parts = append(parts, fmt.Sprintf("%s: %s → %s",
-			teamsText(a.Path), teamsText(clip(render(a.Old), 60)), teamsText(clip(render(a.New), 60))))
+		if i > 0 {
+			out = append(out, acInline{Type: "TextRun", Text: ";  ", IsSubtle: true})
+		}
+		out = append(out,
+			acInline{Type: "TextRun", Text: teamsText(a.Path) + ": ", IsSubtle: true},
+			acInline{Type: "TextRun", Text: teamsText(clip(render(a.Old), 60)), Color: "Attention"},
+			acInline{Type: "TextRun", Text: " → ", IsSubtle: true},
+			acInline{Type: "TextRun", Text: teamsText(clip(render(a.New), 60)), Color: "Good"},
+		)
 	}
-	return strings.Join(parts, "; ")
+	return out
+}
+
+// teamsPlain is an uncoloured detail line — a deprecation's text, or the reason
+// an item was ignored.
+func teamsPlain(s string) []acInline {
+	if s == "" {
+		return nil
+	}
+	return []acInline{{Type: "TextRun", Text: s, IsSubtle: true}}
 }
 
 func teamsDeprItems(depr []Deprecation, max int) []acElement {
@@ -500,7 +523,7 @@ func teamsDeprItems(depr []Deprecation, max int) []acElement {
 			Colour: colour,
 			Title:  "**" + teamsText(d.Summary) + "**",
 			Where:  teamsSites(d),
-			Detail: detail,
+			Detail: teamsPlain(detail),
 			Badge:  teamsBadge(sev),
 			New:    d.BaselineState == "new",
 			Age:    teamsAge(d.FirstSeen, d.FirstRunURL),
@@ -546,7 +569,7 @@ func teamsIgnoredItems(drift []ResourceReport, max int) []acElement {
 			Colour: "Default",
 			Title:  "**" + teamsText(rr.Address) + "**",
 			Where:  teamsWhere(rr),
-			Detail: teamsText(reasonOr(rr.SuppressReason)),
+			Detail: teamsPlain(teamsText(reasonOr(rr.SuppressReason))),
 			Badge:  teamsBadge(rr.Action),
 			Note:   teamsText(rr.SuppressSrc),
 			Sep:    i > 0,
@@ -567,7 +590,7 @@ func teamsIgnoredDeprItems(depr []Deprecation, max int) []acElement {
 			Colour: "Default",
 			Title:  "**" + teamsText(d.Summary) + "**",
 			Where:  teamsSites(d),
-			Detail: teamsText(reasonOr(d.SuppressReason)),
+			Detail: teamsPlain(teamsText(reasonOr(d.SuppressReason))),
 			Note:   teamsText(d.SuppressSrc),
 			Sep:    i > 0,
 		}))

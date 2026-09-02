@@ -81,12 +81,19 @@ func allEls(doc teamsDoc) []acEl {
 	return out
 }
 
-// elText is every string inside one element's subtree, un-escaped.
+// elText is every string inside one element's subtree, un-escaped — TextBlock
+// text and RichTextBlock runs alike.
 func elText(e acEl) string {
 	var b strings.Builder
 	walk([]acEl{e}, func(x acEl) {
 		if x.Text != "" {
 			b.WriteString(x.Text)
+			b.WriteString("\n")
+		}
+		for _, in := range x.Inlines {
+			b.WriteString(in.Text)
+		}
+		if len(x.Inlines) > 0 {
 			b.WriteString("\n")
 		}
 	})
@@ -130,6 +137,13 @@ func bodyText(doc teamsDoc) string {
 	walk(doc.Attachments[0].Content.Body, func(e acEl) {
 		if e.Text != "" {
 			b.WriteString(e.Text)
+			b.WriteString("\n")
+		}
+		// Detail lines are RichTextBlocks, so their text lives in runs.
+		for _, in := range e.Inlines {
+			b.WriteString(in.Text)
+		}
+		if len(e.Inlines) > 0 {
 			b.WriteString("\n")
 		}
 	})
@@ -602,5 +616,46 @@ func TestNewFindingHasNoAgeLink(t *testing.T) {
 	body := bodyText(mustParseTeams(t, r))
 	if strings.Contains(body, "first seen") {
 		t.Errorf("a new finding should show the New chip, not a linked age:\n%s", body)
+	}
+}
+
+// The before/after values in an attribute change are coloured like the run tab's
+// diff: red for what it was, green for what it is now.
+func TestWriteTeamsColoursAttributeDiff(t *testing.T) {
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y",
+			map[string]any{"min_tls_version": "TLS1_2"},
+			map[string]any{"min_tls_version": "TLS1_0"}),
+	}})
+
+	doc, _ := parseTeams(t, r, TeamsOptions{})
+
+	var runs []acInlineT
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
+		if e.Type == "RichTextBlock" && len(e.Inlines) > 2 { // not a badge
+			runs = append(runs, e.Inlines...)
+		}
+	})
+	if len(runs) == 0 {
+		t.Fatal("attribute detail is not a RichTextBlock, so it cannot be coloured")
+	}
+
+	// Values arrive Markdown-escaped, so compare against what a reader sees.
+	unesc := strings.NewReplacer(`\*`, "*", `\_`, "_", `\[`, "[", `\]`, "]")
+	colourOf := map[string]string{}
+	for _, in := range runs {
+		colourOf[unesc.Replace(strings.TrimSpace(in.Text))] = in.Color
+	}
+	if got := colourOf[`"TLS1_2"`]; got != "Attention" {
+		t.Errorf("old value colour = %q, want Attention (red) — runs: %+v", got, runs)
+	}
+	if got := colourOf[`"TLS1_0"`]; got != "Good" {
+		t.Errorf("new value colour = %q, want Good (green) — runs: %+v", got, runs)
+	}
+	// The path and arrow stay muted so the values are what stands out.
+	for _, plainish := range []string{"min_tls_version:", "→"} {
+		if c := colourOf[plainish]; c != "" {
+			t.Errorf("%q should be uncoloured, got %q", plainish, c)
+		}
 	}
 }
