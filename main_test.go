@@ -611,8 +611,10 @@ func TestRunTeamsNotifyNew(t *testing.T) {
 	if posts != 1 {
 		t.Fatalf("posts = %d, want 1 for a finding absent from the baseline", posts)
 	}
-	if !strings.Contains(body, "new since the last run") {
-		t.Errorf("card should mark the finding as new:\n%s", body)
+	// Marked with a highlighted "New" chip, the card's version of the run tab's
+	// new pill.
+	if !strings.Contains(body, `"text": " New "`) || !strings.Contains(body, `"highlight": true`) {
+		t.Errorf("card should mark the finding with a New chip:\n%s", body)
 	}
 	if !strings.Contains(body, `"title": "New"`) {
 		t.Errorf("card should carry a New fact:\n%s", body)

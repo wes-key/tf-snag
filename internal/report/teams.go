@@ -217,7 +217,9 @@ type teamsRow struct {
 	Where  string // module, or the .tf that declares it
 	Detail string // attribute changes / deprecation detail
 	Badge  string // "Update", "Warning", ... the tab's Change / Severity column
-	Prov   string // "new since the last run" / "first seen ..."
+	New    bool   // absent from the baseline — gets a chip, like the tab's pill
+	Age    string // "first seen ..." for anything carried over
+	Note   string // ignored rows: the rule that matched
 	Sep    bool
 }
 
@@ -234,18 +236,24 @@ func teamsFinding(r teamsRow) acElement {
 		main = append(main, sub(r.Detail, ""))
 	}
 
-	// Right-hand column: the badge over the provenance, mirroring the tab's
-	// Change and First seen columns.
+	// Right-hand column: the category chip over the provenance, mirroring the
+	// tab's Change and First seen columns.
 	right := []acElement{}
 	if r.Badge != "" {
+		right = append(right, teamsChip(r.Badge, r.Colour, "Right"))
+	}
+	switch {
+	case r.New:
+		right = append(right, teamsChip("New", "Accent", "Right"))
+	case r.Age != "":
 		right = append(right, acElement{
-			Type: "TextBlock", Text: r.Badge, Color: r.Colour,
-			Weight: "Bolder", Size: "Small", HorizontalAlignment: "Right", Wrap: true,
+			Type: "TextBlock", Text: r.Age, IsSubtle: true,
+			Size: "Small", HorizontalAlignment: "Right", Spacing: "None", Wrap: true,
 		})
 	}
-	if r.Prov != "" {
+	if r.Note != "" {
 		right = append(right, acElement{
-			Type: "TextBlock", Text: r.Prov, IsSubtle: true,
+			Type: "TextBlock", Text: r.Note, IsSubtle: true,
 			Size: "Small", HorizontalAlignment: "Right", Spacing: "None", Wrap: true,
 		})
 	}
@@ -331,17 +339,31 @@ func teamsNewFirst[T any](items []T, isNew func(T) bool) []T {
 	return out
 }
 
-// teamsProvenance is the sub-line telling a reader whether this finding is new
-// or has been sitting there. Empty when the run had no -baseline.
-func teamsProvenance(state, firstSeen string) string {
-	if state == "new" {
-		return "🆕 new since the last run"
-	}
+// teamsAge is the "first seen …" note for a finding carried over from the
+// previous run. Empty when the run had no -baseline.
+func teamsAge(firstSeen string) string {
 	// ageParens is " (first seen …)" — unwrap it for use as a standalone line.
-	if a := strings.Trim(ageParens(firstSeen), " ()"); a != "" {
-		return a
+	return strings.Trim(ageParens(firstSeen), " ()")
+}
+
+// teamsChip is the card's answer to the run tab's pill badges: a TextRun with
+// highlight set, which Teams draws as a tinted background behind coloured text.
+// Adaptive Cards has no badge element (the 1.6 one is too new for Teams), and a
+// styled Container would be a full-width box rather than a chip. The padding
+// spaces are deliberate — highlight hugs the glyph run otherwise.
+func teamsChip(text, colour, align string) acElement {
+	return acElement{
+		Type:                "RichTextBlock",
+		HorizontalAlignment: align,
+		Inlines: []acInline{{
+			Type:      "TextRun",
+			Text:      " " + text + " ",
+			Color:     colour,
+			Weight:    "Bolder",
+			Size:      "Small",
+			Highlight: true,
+		}},
 	}
-	return ""
 }
 
 func teamsDriftItems(drift []ResourceReport, max int) []acElement {
@@ -358,7 +380,8 @@ func teamsDriftItems(drift []ResourceReport, max int) []acElement {
 			Where:  teamsWhere(rr),
 			Detail: teamsAttrDetail(rr),
 			Badge:  teamsBadge(rr.Action),
-			Prov:   teamsProvenance(rr.BaselineState, rr.FirstSeen),
+			New:    rr.BaselineState == "new",
+			Age:    teamsAge(rr.FirstSeen),
 			Sep:    i > 0,
 		}))
 	}
@@ -431,7 +454,8 @@ func teamsDeprItems(depr []Deprecation, max int) []acElement {
 			Where:  teamsSites(d),
 			Detail: detail,
 			Badge:  teamsBadge(sev),
-			Prov:   teamsProvenance(d.BaselineState, d.FirstSeen),
+			New:    d.BaselineState == "new",
+			Age:    teamsAge(d.FirstSeen),
 			Sep:    i > 0,
 		}))
 	}
@@ -476,7 +500,7 @@ func teamsIgnoredItems(drift []ResourceReport, max int) []acElement {
 			Where:  teamsWhere(rr),
 			Detail: teamsText(reasonOr(rr.SuppressReason)),
 			Badge:  teamsBadge(rr.Action),
-			Prov:   teamsText(rr.SuppressSrc),
+			Note:   teamsText(rr.SuppressSrc),
 			Sep:    i > 0,
 		}))
 	}
@@ -496,7 +520,7 @@ func teamsIgnoredDeprItems(depr []Deprecation, max int) []acElement {
 			Title:  "**" + teamsText(d.Summary) + "**",
 			Where:  teamsSites(d),
 			Detail: teamsText(reasonOr(d.SuppressReason)),
-			Prov:   teamsText(d.SuppressSrc),
+			Note:   teamsText(d.SuppressSrc),
 			Sep:    i > 0,
 		}))
 	}
@@ -569,7 +593,20 @@ type acElement struct {
 
 	Items        []acElement `json:"items,omitempty"`   // Container
 	Columns      []acColumn  `json:"columns,omitempty"` // ColumnSet
+	Inlines      []acInline  `json:"inlines,omitempty"` // RichTextBlock
 	SelectAction *acAction   `json:"selectAction,omitempty"`
+}
+
+// acInline is a run of text inside a RichTextBlock. Highlight is what makes a
+// chip: Teams paints a background derived from Color behind the run.
+type acInline struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Color     string `json:"color,omitempty"`
+	Weight    string `json:"weight,omitempty"`
+	Size      string `json:"size,omitempty"`
+	Highlight bool   `json:"highlight,omitempty"`
+	IsSubtle  bool   `json:"isSubtle,omitempty"`
 }
 
 type acColumn struct {

@@ -27,10 +27,19 @@ type acEl struct {
 	Columns []struct {
 		Items []acEl `json:"items"`
 	} `json:"columns"`
+	Inlines      []acInlineT `json:"inlines"`
 	SelectAction *struct {
 		Type           string   `json:"type"`
 		TargetElements []string `json:"targetElements"`
 	} `json:"selectAction"`
+}
+
+// acInlineT is a RichTextBlock run — how the card renders a badge chip.
+type acInlineT struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Color     string `json:"color"`
+	Highlight bool   `json:"highlight"`
 }
 
 // teamsDoc mirrors the parts of the payload the tests assert on.
@@ -451,5 +460,54 @@ func TestWriteTeamsTrimsLongDetail(t *testing.T) {
 	}
 	if strings.Contains(body, "Migrate to the replacement block") {
 		t.Errorf("detail not trimmed to the first sentence:\n%s", body)
+	}
+}
+
+// Category badges are RichTextBlock runs with highlight set — the card's stand-in
+// for the run tab's pill badges, since Adaptive Cards 1.4 has no badge element.
+func TestWriteTeamsChips(t *testing.T) {
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.upd", map[string]any{"v": 1}, map[string]any{"v": 2}),
+	}})
+	r.Drift[0].BaselineState = "new"
+	r.Deprecations = []Deprecation{{Severity: "warning", Summary: "Argument is deprecated"}}
+
+	doc, _ := parseTeams(t, r, TeamsOptions{})
+
+	chips := map[string]acInlineT{}
+	walk(doc.Attachments[0].Content.Body, func(e acEl) {
+		if e.Type != "RichTextBlock" {
+			return
+		}
+		for _, in := range e.Inlines {
+			chips[strings.TrimSpace(in.Text)] = in
+		}
+	})
+
+	for _, tc := range []struct{ text, colour string }{
+		{"Update", "Warning"},  // the drift action
+		{"New", "Accent"},      // provenance
+		{"Warning", "Warning"}, // deprecation severity
+	} {
+		in, ok := chips[tc.text]
+		if !ok {
+			t.Errorf("no %q chip (got %v)", tc.text, chips)
+			continue
+		}
+		if !in.Highlight {
+			t.Errorf("%q chip is not highlighted — it will not read as a badge", tc.text)
+		}
+		if in.Color != tc.colour {
+			t.Errorf("%q chip colour = %q, want %q", tc.text, in.Color, tc.colour)
+		}
+		// The padding spaces are what stop Teams hugging the text.
+		if !strings.HasPrefix(in.Text, " ") || !strings.HasSuffix(in.Text, " ") {
+			t.Errorf("%q chip lost its padding: %q", tc.text, in.Text)
+		}
+	}
+
+	// A new finding shows the chip instead of an age line.
+	if body := bodyText(doc); strings.Contains(body, "first seen") {
+		t.Errorf("new finding should not also carry an age line:\n%s", body)
 	}
 }
