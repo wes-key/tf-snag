@@ -1,7 +1,9 @@
 package report
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"strings"
@@ -363,30 +365,58 @@ func teamsAge(firstSeen, runURL string) string {
 	return "[" + age + "](" + runURL + ")"
 }
 
-// chipPad is a non-breaking space. Ordinary spaces at the edges of a TextRun get
-// collapsed or trimmed by the renderer, which leaves the highlight hugging the
-// letters and reading as smudged text rather than a chip; U+00A0 survives.
-const chipPad = "  "
+// chipFill is the solid background each category is drawn on. Adaptive Cards
+// text cannot do white-on-colour — TextRun.highlight derives its background from
+// the text colour, so white text would give a white background — so the badges
+// are drawn as images instead.
+var chipFill = map[string]string{
+	"Good":      "#107c10", // create
+	"Warning":   "#ca5010", // update, deprecation warning
+	"Attention": "#c50f1f", // delete, replace, error
+	"Accent":    "#2a5bd7", // new
+	"Default":   "#605e5c", // ignored / unknown
+}
 
-// teamsChip is the card's answer to the run tab's pill badges: a TextRun with
-// highlight set, which Teams draws as a tinted background behind coloured text.
-// This is as close as Adaptive Cards 1.4 gets — there is no badge element (the
-// 1.6 one is too new for Teams), no border colour and no corner radius, and a
-// styled Container would be a full-width box rather than an inline chip.
+// teamsChip renders the run tab's pill badge: solid fill, rounded ends, white
+// bold text. No Adaptive Cards text element can express that (no background
+// colour, no border, no corner radius below 1.5), so it is an inline SVG.
 func teamsChip(text, colour, align string) acElement {
-	return acElement{
-		Type:                "RichTextBlock",
-		HorizontalAlignment: align,
-		Inlines: []acInline{{
-			Type:  "TextRun",
-			Text:  chipPad + text + chipPad,
-			Color: colour,
-			// Body size, not Small: at Small the chip is barely legible against
-			// the resource name it sits beside.
-			Weight:    "Bolder",
-			Highlight: true,
-		}},
+	fill, ok := chipFill[colour]
+	if !ok {
+		fill = chipFill["Default"]
 	}
+	// No font metrics here, so approximate: ~7px per character at 11px bold,
+	// plus padding. Over-estimating only pads the pill; under-estimating clips
+	// the label, so err high.
+	w := len([]rune(text))*7 + 18
+	return acElement{
+		Type:                "Image",
+		URL:                 chipSVG(text, fill, w),
+		AltText:             text,
+		Width:               fmt.Sprintf("%dpx", w),
+		HorizontalAlignment: align,
+	}
+}
+
+// chipSVG draws the pill and inlines it as a data URI, so nothing is fetched
+// from a third party when the card renders.
+func chipSVG(text, fill string, w int) string {
+	const h = 20
+	svg := fmt.Sprintf(
+		`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">`+
+			`<rect width="%d" height="%d" rx="%d" fill="%s"/>`+
+			`<text x="%d" y="14" fill="#ffffff" text-anchor="middle" font-weight="700" `+
+			`font-size="11" font-family="Segoe UI,Helvetica,Arial,sans-serif">%s</text></svg>`,
+		w, h, w, h, w, h, h/2, fill, w/2, xmlEscape(text))
+	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString([]byte(svg))
+}
+
+// xmlEscape protects the label: an action verb is plain ASCII today, but a stray
+// & or < would produce an SVG that silently fails to parse.
+func xmlEscape(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
 
 func teamsDriftItems(drift []ResourceReport, max int) []acElement {
@@ -613,6 +643,9 @@ type acElement struct {
 	HorizontalAlignment string   `json:"horizontalAlignment,omitempty"`
 	IsVisible           *bool    `json:"isVisible,omitempty"`
 	Facts               []acFact `json:"facts,omitempty"`
+	URL                 string   `json:"url,omitempty"`     // Image
+	AltText             string   `json:"altText,omitempty"` // Image
+	Width               string   `json:"width,omitempty"`   // Image, e.g. "64px"
 
 	Items        []acElement `json:"items,omitempty"`   // Container
 	Columns      []acColumn  `json:"columns,omitempty"` // ColumnSet
