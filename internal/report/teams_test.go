@@ -2,7 +2,6 @@ package report
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -20,9 +19,6 @@ type acEl struct {
 	Style     string `json:"style"`
 	Weight    string `json:"weight"`
 	IsVisible *bool  `json:"isVisible"`
-	AltText   string `json:"altText"`
-	URL       string `json:"url"`
-	Width     string `json:"width"`
 	Facts     []struct {
 		Title string `json:"title"`
 		Value string `json:"value"`
@@ -31,10 +27,19 @@ type acEl struct {
 	Columns []struct {
 		Items []acEl `json:"items"`
 	} `json:"columns"`
+	Inlines      []acInlineT `json:"inlines"`
 	SelectAction *struct {
 		Type           string   `json:"type"`
 		TargetElements []string `json:"targetElements"`
 	} `json:"selectAction"`
+}
+
+// acInlineT is a RichTextBlock run — how the card renders a badge chip.
+type acInlineT struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	Color     string `json:"color"`
+	Highlight bool   `json:"highlight"`
 }
 
 // teamsDoc mirrors the parts of the payload the tests assert on.
@@ -469,60 +474,46 @@ func TestWriteTeamsChips(t *testing.T) {
 
 	doc, _ := parseTeams(t, r, TeamsOptions{})
 
-	chips := map[string]acEl{}
+	chips := map[string]acInlineT{}
 	walk(doc.Attachments[0].Content.Body, func(e acEl) {
-		if e.Type == "Image" && e.AltText != "" {
-			chips[e.AltText] = e
+		if e.Type != "RichTextBlock" {
+			return
+		}
+		for _, in := range e.Inlines {
+			chips[strings.TrimSpace(in.Text)] = in
 		}
 	})
 
-	for _, tc := range []struct{ text, fill string }{
-		{"Update", "#ca5010"},  // the drift action - orange
-		{"New", "#2a5bd7"},     // provenance - royal blue
-		{"Warning", "#ca5010"}, // deprecation severity
+	for _, tc := range []struct{ text, colour string }{
+		{"Update", "Warning"},  // the drift action
+		{"New", "Accent"},      // provenance
+		{"Warning", "Warning"}, // deprecation severity
 	} {
-		img, ok := chips[tc.text]
+		in, ok := chips[tc.text]
 		if !ok {
-			t.Errorf("no %q badge (got %v)", tc.text, chips)
+			t.Errorf("no %q chip (got %v)", tc.text, chips)
 			continue
 		}
-		svg := decodeChip(t, img.URL)
-		if !strings.Contains(svg, `fill="`+tc.fill+`"`) {
-			t.Errorf("%q badge fill missing %s:\n%s", tc.text, tc.fill, svg)
+		if !in.Highlight {
+			t.Errorf("%q chip is not highlighted — it will not read as a badge", tc.text)
 		}
-		if !strings.Contains(svg, `fill="#ffffff"`) {
-			t.Errorf("%q badge text is not white:\n%s", tc.text, svg)
+		if in.Color != tc.colour {
+			t.Errorf("%q chip colour = %q, want %q", tc.text, in.Color, tc.colour)
 		}
-		if !strings.Contains(svg, ">"+tc.text+"<") {
-			t.Errorf("%q badge does not carry its label:\n%s", tc.text, svg)
+		// Padding must be non-breaking: ordinary spaces get trimmed at the run
+		// boundary and the chip collapses onto the text.
+		if !strings.HasPrefix(in.Text, chipPad) || !strings.HasSuffix(in.Text, chipPad) {
+			t.Errorf("%q chip lost its non-breaking padding: %q", tc.text, in.Text)
 		}
-		// Rounded ends: rx is half the height.
-		if !strings.Contains(svg, `rx="10"`) {
-			t.Errorf("%q badge is not a pill:\n%s", tc.text, svg)
-		}
-		if img.Width == "" {
-			t.Errorf("%q badge has no explicit width, so Teams will size it itself", tc.text)
+		if strings.HasPrefix(in.Text, " ") || strings.HasSuffix(in.Text, " ") {
+			t.Errorf("%q chip padded with collapsible spaces: %q", tc.text, in.Text)
 		}
 	}
 
-	// A new finding shows the badge instead of an age line.
+	// A new finding shows the chip instead of an age line.
 	if body := bodyText(doc); strings.Contains(body, "first seen") {
 		t.Errorf("new finding should not also carry an age line:\n%s", body)
 	}
-}
-
-// decodeChip unwraps the data URI back to the SVG source.
-func decodeChip(t *testing.T, dataURI string) string {
-	t.Helper()
-	const pfx = "data:image/svg+xml;base64,"
-	if !strings.HasPrefix(dataURI, pfx) {
-		t.Fatalf("badge is not an inline SVG data URI: %q", dataURI)
-	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(dataURI, pfx))
-	if err != nil {
-		t.Fatalf("badge SVG is not valid base64: %v", err)
-	}
-	return string(raw)
 }
 
 // The run that first surfaced a finding has to survive being written to SARIF
