@@ -452,8 +452,9 @@ by tests. Deprecation check (`-check deprecations`, from the `terraform plan
 Summary, the tf-snag run tab (`extension/`), Teams notifications and Azure DevOps
 work items are live.
 
-Known gap: the work item reference is carried in the JSON (`work_item`,
-`work_item_url`) but the run tab does not render it yet.
+The run tab shows the work item reference and the "no longer ignored" badge, so
+it needs republishing (manifest `0.5.0`) alongside a release carrying the work
+item feature.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
 `main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,
