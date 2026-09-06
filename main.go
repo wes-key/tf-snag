@@ -20,6 +20,7 @@ import (
 	"runtime/debug"
 	"strings"
 
+	"github.com/wes-key/tf-snag/internal/ado"
 	"github.com/wes-key/tf-snag/internal/ignore"
 	"github.com/wes-key/tf-snag/internal/plan"
 	"github.com/wes-key/tf-snag/internal/report"
@@ -88,6 +89,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	teamsNotify := fs.String("teams-notify", "findings", "when to post to Teams: `findings` (anything un-suppressed), new (only findings absent from -baseline) or always")
 	teamsContext := fs.String("teams-context", "", "subtle `line` under the Teams card headline, e.g. the pipeline, branch and run number")
 	runURL := fs.String("run-url", "", "this CI run's `url`; recorded against findings first seen in this run (so later runs can link back) and used for the Teams card's \"View run\" button")
+	adoURL := fs.String("ado-url", "", "Azure DevOps project `url` (https://dev.azure.com/org/project) to raise work items in; needs a token in $TF_SNAG_ADO_TOKEN")
+	adoToken := fs.String("ado-token", "", "Azure DevOps PAT or System.AccessToken (default: $TF_SNAG_ADO_TOKEN). Treat as a secret")
+	adoType := fs.String("ado-type", "Task", "work item `type` to raise, e.g. Task, Bug or Issue")
+	adoArea := fs.String("ado-area", "", "area `path` for new work items (default: the project root)")
+	adoRaise := fs.String("ado-raise", "new", "which findings get a work item: `new` (absent from -baseline) or findings (anything un-suppressed)")
+	adoClose := fs.Bool("ado-close", false, "close work items whose finding is no longer reported")
+	adoClosedState := fs.String("ado-closed-state", "", "`state` to move a resolved finding's work item to; default: the work item type's own completed state (Closed on Agile, Done on Scrum and Basic)")
+	adoDryRun := fs.Bool("ado-dry-run", false, "report the work items that would be raised or closed, without changing anything")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: terraform show -json PLANFILE | tf-snag [flags]")
@@ -233,6 +242,36 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		prior.StampReport(rep)
 	}
 
+	// Resolve -source once: the SARIF writer wants the index for its physical
+	// locations, and everything else wants file+line stamped on the findings
+	// (the JSON tab shows it, and it goes in a work item's body).
+	var srcIndex map[string]report.SourceLoc
+	if *source != "" {
+		if srcIndex, err = indexTFSources(*source); err != nil {
+			fmt.Fprintln(stderr, "tf-snag:", err)
+			return 2
+		}
+		rep.AttachSourceLocations(srcIndex)
+	}
+
+	if *adoURL != "" {
+		cfg := adoConfig{
+			url:         *adoURL,
+			token:       firstNonEmpty(*adoToken, os.Getenv("TF_SNAG_ADO_TOKEN")),
+			itemType:    *adoType,
+			area:        *adoArea,
+			raise:       *adoRaise,
+			closeItems:  *adoClose,
+			closedState: *adoClosedState,
+			dryRun:      *adoDryRun,
+			runURL:      *runURL,
+			context:     *teamsContext,
+		}
+		if code := syncWorkItems(rep, cfg, stderr); code != 0 {
+			return code
+		}
+	}
+
 	switch *format {
 	case "text":
 		if useColor {
@@ -241,28 +280,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			err = rep.WriteText(stdout)
 		}
 	case "json":
-		if *source != "" {
-			srcIndex, serr := indexTFSources(*source)
-			if serr != nil {
-				fmt.Fprintln(stderr, "tf-snag:", serr)
-				return 2
-			}
-			rep.AttachSourceLocations(srcIndex)
-		}
 		err = rep.WriteJSON(stdout)
 	case "markdown", "md":
 		err = rep.WriteMarkdown(stdout)
 	case "junit":
 		err = rep.WriteJUnit(stdout)
 	case "sarif":
-		var srcIndex map[string]report.SourceLoc
-		if *source != "" {
-			srcIndex, err = indexTFSources(*source)
-			if err != nil {
-				fmt.Fprintln(stderr, "tf-snag:", err)
-				return 2
-			}
-		}
 		err = rep.WriteSARIF(stdout, srcIndex, prior)
 	case "teams":
 		err = rep.WriteTeams(stdout, teamsOpts)
@@ -317,6 +340,161 @@ func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Write
 	return 0
 }
 
+// adoConfig is the resolved -ado-* configuration for one run.
+type adoConfig struct {
+	url, token      string
+	itemType, area  string
+	raise           string
+	closeItems      bool
+	closedState     string
+	dryRun          bool
+	runURL, context string
+}
+
+// syncWorkItems raises Azure DevOps work items for findings and, with
+// -ado-close, closes those whose finding has gone. It validates the
+// configuration before touching anything: a bad token, project or work item type
+// is worth knowing about up front rather than after half the findings have been
+// raised.
+//
+// Everything it prints goes to stderr. stdout carries the report, and -format
+// json/sarif is redirected straight to a file by the pipeline — a progress line
+// in the middle of that makes it unparseable.
+func syncWorkItems(rep *report.Report, cfg adoConfig, stderr io.Writer) int {
+	if strings.TrimSpace(cfg.token) == "" {
+		fmt.Fprintln(stderr, "tf-snag: -ado-url needs a token — pass -ado-token or set $TF_SNAG_ADO_TOKEN")
+		return 2
+	}
+	orgURL, project, err := ado.ParseURL(cfg.url)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	eligible, err := adoEligibility(cfg.raise, rep, stderr)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+
+	client := &ado.Client{OrgURL: orgURL, Project: project, Token: cfg.token}
+	opts := ado.Options{
+		Type:        cfg.itemType,
+		AreaPath:    cfg.area,
+		ClosedState: cfg.closedState,
+		Close:       cfg.closeItems,
+		DryRun:      cfg.dryRun,
+		RunURL:      cfg.runURL,
+		Context:     cfg.context,
+	}
+
+	// Pre-flight: a validateOnly create exercises the same permission and the
+	// same work item type as the real thing, without leaving anything behind.
+	if err := client.Validate(ado.NewItem{
+		FindingID: "preflight",
+		Type:      cfg.itemType,
+		Title:     "tf-snag permission check",
+	}); err != nil {
+		fmt.Fprintln(stderr, "tf-snag: cannot raise work items:", err)
+		return 2
+	}
+
+	// Whether an existing item is still open decides whether a finding links to
+	// it or gets a fresh one, so the type's finished states are needed on every
+	// run, not only when closing. Best effort: if the lookup fails, fall back to
+	// matching the closed state by name rather than abandoning the run.
+	if cats, err := client.StateCategories(cfg.itemType); err != nil {
+		fmt.Fprintf(stderr, "tf-snag: could not read %s states (%v); treating only %q as closed\n",
+			cfg.itemType, err, cfg.closedState)
+	} else {
+		opts.Terminal = map[string]bool{}
+		for name, cat := range cats {
+			if cat == "Completed" || cat == "Removed" {
+				opts.Terminal[name] = true
+			}
+		}
+	}
+
+	// Closing is a state transition, which the create check above does not
+	// exercise at all — so resolve and verify the state now, before a finding
+	// disappearing turns into a 400 mid-run. An empty -ado-closed-state picks
+	// the type's own completed state, which is what makes this work unchanged on
+	// Agile ("Closed"), Scrum and Basic ("Done").
+	if cfg.closeItems {
+		state, err := client.ResolveClosedState(cfg.itemType, cfg.closedState)
+		if err != nil {
+			fmt.Fprintln(stderr, "tf-snag:", err)
+			return 2
+		}
+		if cfg.closedState == "" {
+			fmt.Fprintf(stderr, "tf-snag: closing resolved %s work items as %q\n", cfg.itemType, state)
+		}
+		opts.ClosedState = state
+	}
+
+	res, err := client.Sync(rep, opts, eligible, stderr)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+
+	verb := "raised"
+	if cfg.dryRun {
+		verb = "would raise"
+	}
+	fmt.Fprintf(stderr, "work items: %s %d, closed %d, commented %d, already tracked %d\n",
+		verb, len(res.Created), len(res.Closed), len(res.Noted), res.Existing)
+	if n := len(res.Duplicates); n > 0 {
+		fmt.Fprintf(stderr, "  %d finding(s) have more than one open work item; see the notes above\n", n)
+	}
+	for _, ch := range res.Created {
+		if ch.ID != 0 {
+			fmt.Fprintf(stderr, "  #%d %s\n", ch.ID, ch.URL)
+		}
+	}
+	return 0
+}
+
+// adoEligibility turns -ado-raise into the predicate Sync applies to creation.
+// "new" needs a -baseline to mean anything; without one it degrades to
+// "findings" and says so, rather than silently never raising an item.
+func adoEligibility(raise string, rep *report.Report, stderr io.Writer) (func(ado.FindingKind, string) bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raise)) {
+	case "findings":
+		return nil, nil // nil means "everything reaching this point"
+	case "", "new":
+		if !rep.IsBaselined() {
+			fmt.Fprintln(stderr, "tf-snag: -ado-raise new needs -baseline to identify new findings; raising for any un-suppressed finding instead")
+			return nil, nil
+		}
+		// Newly actionable, not merely newly detected: a finding whose ignore
+		// rule was just removed needs an item too. Its old one, if it had one,
+		// was closed when the rule went in.
+		newIDs := map[string]bool{}
+		for _, rr := range rep.Drift {
+			if rr.BaselineState == "new" || rr.Unsuppressed {
+				newIDs[rr.FindingID()] = true
+			}
+		}
+		for _, d := range rep.Deprecations {
+			if d.BaselineState == "new" || d.Unsuppressed {
+				newIDs[d.FindingID()] = true
+			}
+		}
+		return func(_ ado.FindingKind, id string) bool { return newIDs[id] }, nil
+	default:
+		return nil, fmt.Errorf("invalid -ado-raise %q (want new or findings)", raise)
+	}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // parseTeamsNotify validates -teams-notify and normalises the empty value.
 func parseTeamsNotify(s string) (string, error) {
 	switch v := strings.ToLower(strings.TrimSpace(s)); v {
@@ -342,7 +520,10 @@ func teamsShouldPost(rep *report.Report, notify string, stderr io.Writer) bool {
 			fmt.Fprintln(stderr, "tf-snag: -teams-notify new needs -baseline to identify new findings; posting as -teams-notify findings would")
 			return rep.HasGatingFindings()
 		}
-		return rep.HasNewFindings()
+		// Also fires for a finding whose ignore rule has just been removed: it
+		// was invisible here yesterday and is actionable today, which is the
+		// thing "new" is really gating on.
+		return rep.HasNewlyActionable()
 	default: // findings
 		return rep.HasGatingFindings()
 	}

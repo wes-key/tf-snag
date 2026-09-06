@@ -23,6 +23,13 @@ to the `.tf` that declares the resource (Azure Repos Git and GitHub), the same
 way the Scans tab does — needs the pipeline to pass `-source`. The tab follows
 the org's light/dark theme.
 
+**Work items.** When the pipeline passes `-ado-url`, each finding's expanded row
+carries a **Work item: #1234** link straight to the item tracking it.
+
+**No longer ignored.** A finding whose ignore rule has just been removed is
+badged as such rather than as *new*, and keeps its real first-detected date
+underneath — the tracking is new, the drift is not.
+
 ## How it works
 
 ```

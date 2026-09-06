@@ -92,12 +92,16 @@ func (r *Report) teamsPayload(opts TeamsOptions) teamsMessage {
 	// New findings lead, so with the list capped it is the things that appeared
 	// since the last run that survive the cut.
 	if len(drift) > 0 {
-		drift = teamsNewFirst(drift, func(rr ResourceReport) bool { return rr.BaselineState == "new" })
+		drift = teamsByRank(drift, func(rr ResourceReport) int {
+			return findingRank(rr.Unsuppressed, rr.BaselineState)
+		})
 		body = append(body, teamsGroup("drift", "Changed outside Terraform", len(drift),
 			teamsDriftItems(drift, max))...)
 	}
 	if len(depr) > 0 {
-		depr = teamsNewFirst(depr, func(d Deprecation) bool { return d.BaselineState == "new" })
+		depr = teamsByRank(depr, func(d Deprecation) int {
+			return findingRank(d.Unsuppressed, d.BaselineState)
+		})
 		body = append(body, teamsGroup("depr", "Deprecations", len(depr),
 			teamsDeprItems(depr, max))...)
 	}
@@ -225,9 +229,12 @@ type teamsRow struct {
 	Detail []acInline // attribute changes / deprecation detail, as coloured runs
 	Badge  string     // "Update", "Warning", ... the tab's Change / Severity column
 	New    bool       // absent from the baseline — gets a chip, like the tab's pill
-	Age    string     // "first seen ..." for anything carried over
-	Note   string     // ignored rows: the rule that matched
-	Sep    bool
+	// Unsuppressed marks a finding whose ignore rule was removed: newly
+	// actionable rather than newly detected, so it keeps its real age.
+	Unsuppressed bool
+	Age          string // "first seen ..." for anything carried over
+	Note         string // ignored rows: the rule that matched
+	Sep          bool
 }
 
 func teamsFinding(r teamsRow) acElement {
@@ -251,14 +258,23 @@ func teamsFinding(r teamsRow) acElement {
 	if r.Badge != "" {
 		right = append(right, teamsChip(r.Badge, r.Colour, "Right"))
 	}
+	age := acElement{
+		Type: "TextBlock", Text: r.Age, IsSubtle: true,
+		Size: "Small", HorizontalAlignment: "Right", Spacing: "None", Wrap: true,
+	}
 	switch {
+	case r.Unsuppressed:
+		// Its own chip, and it keeps the age: the finding is not new, its
+		// visibility is. Calling it "New" would misreport how long the drift
+		// has been there.
+		right = append(right, teamsChip("No longer ignored", "Accent", "Right"))
+		if r.Age != "" {
+			right = append(right, age)
+		}
 	case r.New:
 		right = append(right, teamsChip("New", "Accent", "Right"))
 	case r.Age != "":
-		right = append(right, acElement{
-			Type: "TextBlock", Text: r.Age, IsSubtle: true,
-			Size: "Small", HorizontalAlignment: "Right", Spacing: "None", Wrap: true,
-		})
+		right = append(right, age)
 	}
 	if r.Note != "" {
 		right = append(right, acElement{
@@ -340,18 +356,31 @@ func teamsCountNew(drift []ResourceReport, depr []Deprecation) int {
 	return n
 }
 
-// teamsNewFirst reorders findings so new ones lead, preserving the relative
-// order within each half.
-func teamsNewFirst[T any](items []T, isNew func(T) bool) []T {
-	out := make([]T, 0, len(items))
-	for _, it := range items {
-		if isNew(it) {
-			out = append(out, it)
-		}
+// findingRank orders what leads the list. Something whose ignore rule was just
+// removed comes first: it was deliberately hidden until now, so its reappearance
+// is the most notable thing in the post. Then genuinely new findings, then
+// everything carried over.
+func findingRank(unsuppressed bool, baselineState string) int {
+	switch {
+	case unsuppressed:
+		return 0
+	case baselineState == "new":
+		return 1
+	default:
+		return 2
 	}
-	for _, it := range items {
-		if !isNew(it) {
-			out = append(out, it)
+}
+
+// teamsByRank is a stable sort into rank order, so within a rank the report's
+// own ordering survives. It matters because the list is capped: whatever leads
+// is what a reader actually sees.
+func teamsByRank[T any](items []T, rank func(T) int) []T {
+	out := make([]T, 0, len(items))
+	for r := 0; r <= 2; r++ {
+		for _, it := range items {
+			if rank(it) == r {
+				out = append(out, it)
+			}
 		}
 	}
 	return out
@@ -426,15 +455,16 @@ func teamsDriftItems(drift []ResourceReport, max int) []acElement {
 			break
 		}
 		out = append(out, teamsFinding(teamsRow{
-			Glyph:  sign(rr.Action),
-			Colour: teamsActionColor(rr.Action),
-			Title:  "**" + teamsText(rr.Address) + "**",
-			Where:  teamsWhere(rr),
-			Detail: teamsAttrDetail(rr),
-			Badge:  teamsBadge(rr.Action),
-			New:    rr.BaselineState == "new",
-			Age:    teamsAge(rr.FirstSeen, rr.FirstRunURL),
-			Sep:    i > 0,
+			Glyph:        sign(rr.Action),
+			Colour:       teamsActionColor(rr.Action),
+			Title:        "**" + teamsText(rr.Address) + "**",
+			Where:        teamsWhere(rr),
+			Detail:       teamsAttrDetail(rr),
+			Badge:        teamsBadge(rr.Action),
+			New:          rr.BaselineState == "new",
+			Unsuppressed: rr.Unsuppressed,
+			Age:          teamsAge(rr.FirstSeen, rr.FirstRunURL),
+			Sep:          i > 0,
 		}))
 	}
 	return out
@@ -521,15 +551,16 @@ func teamsDeprItems(depr []Deprecation, max int) []acElement {
 			detail = teamsText(firstSentence(strings.ReplaceAll(d.Detail, "\n", " "), 200))
 		}
 		out = append(out, teamsFinding(teamsRow{
-			Glyph:  glyph,
-			Colour: colour,
-			Title:  "**" + teamsText(d.Summary) + "**",
-			Where:  teamsSites(d),
-			Detail: teamsPlain(detail),
-			Badge:  teamsBadge(sev),
-			New:    d.BaselineState == "new",
-			Age:    teamsAge(d.FirstSeen, d.FirstRunURL),
-			Sep:    i > 0,
+			Glyph:        glyph,
+			Colour:       colour,
+			Title:        "**" + teamsText(d.Summary) + "**",
+			Where:        teamsSites(d),
+			Detail:       teamsPlain(detail),
+			Badge:        teamsBadge(sev),
+			New:          d.BaselineState == "new",
+			Unsuppressed: d.Unsuppressed,
+			Age:          teamsAge(d.FirstSeen, d.FirstRunURL),
+			Sep:          i > 0,
 		}))
 	}
 	return out

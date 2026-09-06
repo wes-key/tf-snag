@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -678,5 +679,154 @@ func TestRunTeamsNotifyNewWithoutBaselineFallsBack(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "needs -baseline") {
 		t.Errorf("stderr should explain the fallback: %q", errb.String())
+	}
+}
+
+// --- ADO work items -----------------------------------------------------
+
+// adoStub is a minimal Azure DevOps stand-in for the main-level wiring tests.
+func adoStub(t *testing.T, created *int) *httptest.Server {
+	t.Helper()
+	next := 500
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "wiql"):
+			io.WriteString(w, `{"workItems":[]}`)
+		case strings.Contains(r.URL.RawQuery, "validateOnly=true"):
+			io.WriteString(w, `{"id":0,"fields":{}}`)
+		case r.Method == http.MethodPost:
+			*created++
+			next++
+			w.Write([]byte(`{"id":` + strconv.Itoa(next) + `,"fields":{"System.State":"New","System.Title":"t"}}`))
+		default:
+			io.WriteString(w, `{"id":0,"fields":{}}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// With no baseline, -ado-raise new cannot mean anything; it degrades to raising
+// for any un-suppressed finding rather than silently never raising.
+func TestRunADORaisesAndStampsTheReport(t *testing.T) {
+	var created int
+	srv := adoStub(t, &created)
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-format", "json", "-exit-code=false",
+		"-ado-url", srv.URL + "/proj", "-ado-token", "pat"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if created != 1 {
+		t.Errorf("created %d work items, want 1", created)
+	}
+	if !strings.Contains(errb.String(), "needs -baseline") {
+		t.Errorf("stderr should explain the -ado-raise new fallback: %q", errb.String())
+	}
+
+	// The reference is stamped onto the report so every format can show it.
+	var doc struct {
+		Drift []struct {
+			WorkItem    int    `json:"work_item"`
+			WorkItemURL string `json:"work_item_url"`
+		} `json:"drift"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
+		t.Fatalf("output not JSON: %v\n%s", err, out.String())
+	}
+	if len(doc.Drift) != 1 || doc.Drift[0].WorkItem == 0 {
+		t.Fatalf("finding not stamped with a work item: %s", out.String())
+	}
+	if !strings.Contains(doc.Drift[0].WorkItemURL, "_workitems/edit/") {
+		t.Errorf("work item URL = %q, want a browser link", doc.Drift[0].WorkItemURL)
+	}
+}
+
+// The pre-check is the point of issue #14's "clearly alert when permissions are
+// missing": a 403 must fail before any finding is processed.
+func TestRunADOReportsMissingPermissionUpFront(t *testing.T) {
+	var posts int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		http.Error(w, `{"message":"Access denied."}`, http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-url", srv.URL + "/proj", "-ado-token", "pat"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "Work Items (Read & Write)") {
+		t.Errorf("stderr should name the missing permission: %q", errb.String())
+	}
+	// One call: the validateOnly pre-flight, which failed. Nothing further.
+	if posts > 2 {
+		t.Errorf("kept going after the permission check failed (%d calls)", posts)
+	}
+}
+
+func TestRunADOMissingTokenIsAnError(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-url", "https://dev.azure.com/o/p"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "TF_SNAG_ADO_TOKEN") {
+		t.Errorf("stderr should say where the token comes from: %q", errb.String())
+	}
+}
+
+func TestRunADODryRunCreatesNothing(t *testing.T) {
+	var created int
+	srv := adoStub(t, &created)
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-dry-run",
+		"-ado-url", srv.URL + "/proj", "-ado-token", "pat"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if created != 0 {
+		t.Errorf("dry run created %d work items for real", created)
+	}
+	// Narration goes to stderr: stdout is the report, and -format json/sarif is
+	// redirected straight to a file.
+	if !strings.Contains(errb.String(), "would create") {
+		t.Errorf("dry run should report what it would do:\n%s", errb.String())
+	}
+	if strings.Contains(out.String(), "would create") {
+		t.Errorf("work item narration leaked into stdout:\n%s", out.String())
+	}
+}
+
+func TestRunADORejectsBadRaiseValue(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-url", "https://dev.azure.com/o/p",
+		"-ado-token", "pat", "-ado-raise", "sometimes"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "new or findings") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+// Without -ado-url nothing touches Azure DevOps at all.
+func TestRunWithoutADOURLIsUnchanged(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-format", "json", "-exit-code=false"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if strings.Contains(out.String(), "work_item") {
+		t.Errorf("work item fields leaked into a run with no -ado-url:\n%s", out.String())
 	}
 }

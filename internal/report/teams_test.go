@@ -659,3 +659,41 @@ func TestWriteTeamsColoursAttributeDiff(t *testing.T) {
 		}
 	}
 }
+
+// The list is capped, so what leads is what a reader actually sees. A finding
+// whose ignore rule was just removed leads: it was deliberately hidden until
+// now, which makes its reappearance the most notable thing in the post.
+func TestWriteTeamsOrdersUnignoredFirst(t *testing.T) {
+	r := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.carried", map[string]any{"v": 1}, map[string]any{"v": 2}),
+		driftUpdate("azurerm_x.fresh", map[string]any{"v": 1}, map[string]any{"v": 2}),
+		driftUpdate("azurerm_x.unignored", map[string]any{"v": 1}, map[string]any{"v": 2}),
+	}})
+	r.Drift[0].BaselineState = "updated"
+	r.Drift[1].BaselineState = "new"
+	r.Drift[2].BaselineState, r.Drift[2].Unsuppressed = "updated", true
+
+	body := bodyText(mustParseTeams(t, r))
+	pos := func(s string) int { return strings.Index(body, s) }
+	un, fresh, carried := pos("azurerm_x.unignored"), pos("azurerm_x.fresh"), pos("azurerm_x.carried")
+	if un < 0 || fresh < 0 || carried < 0 {
+		t.Fatalf("a finding is missing from the card:\n%s", body)
+	}
+	if !(un < fresh && fresh < carried) {
+		t.Errorf("order = unignored@%d fresh@%d carried@%d, want unignored, then new, then carried over",
+			un, fresh, carried)
+	}
+}
+
+// Ranking must not reorder within a rank — the report's own order survives.
+func TestTeamsByRankIsStable(t *testing.T) {
+	in := []string{"a", "b", "c", "d"}
+	rank := map[string]int{"a": 2, "b": 0, "c": 2, "d": 0}
+	got := teamsByRank(in, func(s string) int { return rank[s] })
+	want := []string{"b", "d", "a", "c"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("teamsByRank = %v, want %v", got, want)
+		}
+	}
+}
