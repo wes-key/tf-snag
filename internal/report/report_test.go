@@ -1194,3 +1194,78 @@ func TestWriteJUnitSkipsSuppressed(t *testing.T) {
 		t.Errorf("suppressed case should sit under tf-snag.ignored:\n%s", out)
 	}
 }
+
+// Removing an ignore rule makes a finding actionable again. It is not newly
+// *detected* though — first_seen still says when it appeared — so it is marked
+// separately rather than as "new".
+func TestStampReportMarksUnsuppressed(t *testing.T) {
+	// Run 1: the finding is present but suppressed, so the SARIF records it with
+	// a suppressions array.
+	r1 := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	r1.Drift[0].Suppressed = true
+	r1.Drift[0].SuppressKind, r1.Drift[0].SuppressReason = "external", "known"
+
+	empty, err := ParsePriorSARIF([]byte(`{"version":"2.1.0","runs":[]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sarif1 bytes.Buffer
+	if err := r1.WriteSARIF(&sarif1, nil, empty); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run 2: the rule is gone.
+	prior, err := ParsePriorSARIF(sarif1.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2 := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	prior.StampReport(r2)
+
+	if !r2.Drift[0].Unsuppressed {
+		t.Error("finding not marked unsuppressed after its ignore rule was removed")
+	}
+	if r2.Drift[0].BaselineState != "updated" {
+		t.Errorf("baseline state = %q — it was detected last run, so it is not new",
+			r2.Drift[0].BaselineState)
+	}
+	if !r2.HasNewlyActionable() {
+		t.Error("HasNewlyActionable should fire: nothing else will surface this")
+	}
+	// Nothing is newly *detected*, so a gate keyed only on that stays silent —
+	// which is the hole HasNewlyActionable exists to close.
+	if r2.HasNewFindings() {
+		t.Error("HasNewFindings should stay false for an unignored finding")
+	}
+}
+
+// A finding that is still suppressed is not newly actionable.
+func TestStampReportStillSuppressedIsNotActionable(t *testing.T) {
+	r1 := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	r1.Drift[0].Suppressed = true
+	empty, _ := ParsePriorSARIF([]byte(`{"version":"2.1.0","runs":[]}`))
+	var buf bytes.Buffer
+	if err := r1.WriteSARIF(&buf, nil, empty); err != nil {
+		t.Fatal(err)
+	}
+
+	prior, _ := ParsePriorSARIF(buf.Bytes())
+	r2 := Build(&plan.Plan{ResourceDrift: []plan.ResourceChange{
+		driftUpdate("azurerm_x.y", map[string]any{"a": 1}, map[string]any{"a": 2}),
+	}})
+	r2.Drift[0].Suppressed = true
+	prior.StampReport(r2)
+
+	if r2.Drift[0].Unsuppressed {
+		t.Error("still-suppressed finding marked unsuppressed")
+	}
+	if r2.HasNewlyActionable() {
+		t.Error("a suppressed finding is not actionable")
+	}
+}

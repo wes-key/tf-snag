@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "tf-snag-tab",
   "publisher": "wes-key",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "name": "tf-snag drift report",
   "description": "Adds a \"tf-snag\" tab to the pipeline run showing drift and deprecation warnings reported by the tf-snag CLI, with ignore-rule and baseline (first-seen) awareness.",
   "public": false,

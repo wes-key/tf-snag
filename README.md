@@ -85,6 +85,16 @@ tf-snag -plan plan.json [flags]
   -run-url url        this CI run's URL: recorded against findings first seen
                       in this run so later ones can link back, and used for the
                       Teams card's "View run" button
+  -ado-url url        Azure DevOps project URL to raise work items in
+                      (https://dev.azure.com/org/project)
+  -ado-token tok      PAT or System.AccessToken (default: $TF_SNAG_ADO_TOKEN)
+  -ado-type type      work item type to raise (default "Task")
+  -ado-area path      area path for new work items
+  -ado-raise when     new (absent from -baseline) or findings (default "new")
+  -ado-close          close work items whose finding is no longer reported
+  -ado-closed-state s state a resolved finding's item moves to; default: the
+                      work item type's own completed state
+  -ado-dry-run        report what would be raised or closed, change nothing
   -exit-code          exit 2 when an un-suppressed drift or deprecation is
                       detected (default true)
   -version            print version and exit
@@ -265,7 +275,11 @@ the card stays about what needs attention.
 | | |
 |---|---|
 | `findings` (default) | whenever anything un-suppressed was found |
-| `new` | only when a finding was **absent from `-baseline`** |
+| `new` | only when a finding was **absent from `-baseline`**, or has just come out from under an ignore rule |
+
+Under `new`, a finding whose ignore rule has just been removed counts too — it
+was invisible here yesterday and is actionable today.
+
 | `always` | every run, clean or not — use it to prove the webhook works |
 
 `new` is the one that matters on a schedule. Drift nobody has fixed is still
@@ -321,6 +335,91 @@ was sent. Cards are capped at five findings per section (and two attribute
 changes per resource) with an "…and N more" line, so a large drift set cannot
 blow past the webhook's payload limit.
 
+## Work items
+
+tf-snag can raise an Azure DevOps work item per finding and close it again when
+the finding goes away:
+
+```
+tf-snag -check all -plan plan.json -plan-log plan.jsonl -baseline prev.sarif \
+  -ado-url https://dev.azure.com/wes-key/tf-snag -ado-type Task -run-url "$RUN_URL"
+```
+
+**Identity.** Every item tf-snag creates is tagged `tf-snag` plus
+`tf-snag-id-<finding id>`, where the id is the same stable guid the SARIF result
+carries. Each run queries those tags back out, so **Azure DevOps** — not a build
+artifact — is the record of what has already been raised. That matters on a
+schedule: artifact retention expires and pipelines get rebuilt, and neither
+should turn into a second work item for drift already being tracked. The id is
+derived from the resource address alone, so a finding keeps its item even as the
+drifted values change.
+
+**What gets raised.** `-ado-raise new` (the default) raises only for findings
+absent from `-baseline`, so adopting this against a drifty estate does not open
+fifty items on day one. `-ado-raise findings` raises for anything un-suppressed.
+Either way an ignored finding never gets one — somebody has already decided not
+to act on it. A finding that already has an item is always linked back to it
+regardless of the mode, so `work_item` / `work_item_url` are on the report for
+every downstream format to show.
+
+**Closing.** `-ado-close` moves items whose finding is no longer reported to
+`-ado-closed-state` and records why in the item's history. That state defaults to
+whichever one the work item type files under the **Completed** category, so Agile
+projects close into `Closed` and Scrum and Basic into `Done` with nothing to
+configure. A value you supply is checked against the type's real states before
+anything is closed — the raw API failure only says the value is unsupported,
+without saying what is supported, and it does not surface until the first run
+where a finding disappears.
+It is opt-in on purpose: creating items is additive, but closing them mutates
+work someone may have triaged, re-assigned or linked.
+
+**Ignoring a finding does not close its item.** Closing would move it into the
+template's *Completed* state — telling the board the work was delivered when
+nobody did any — and by then the item may have been triaged, assigned or pulled
+into a sprint, which is not tf-snag's to unwind. Instead it comments once, saying
+the drift is still there and tf-snag has stopped reporting it, and tags the item
+`tf-snag-ignored` so the note is not repeated on every later run. Whether to
+close it is left to a person.
+
+**Removing the rule resumes on the same item.** It was never closed, so there is
+nothing to reopen and no second item: the note is retracted, the tag removed, and
+the finding is badged **No longer ignored** rather than *New* — it keeps its real
+first-detected date, because the tracking is what changed, not the drift.
+`-teams-notify new` and `-ado-raise new` both fire for it, and both surfaces sort
+it to the top.
+
+**One finding, one open work item.** That is what the id tag is for: while an
+item for a finding is open, every run links to it and none raises a second,
+whoever moved it wherever on the board.
+
+If a finding turns out to have **more than one** open item — duplicates raised
+before this was tightened — tf-snag tracks the oldest, names the others in the
+run output, and touches none of them. They are open items on somebody's board;
+which to keep is a decision, not a cleanup.
+
+**A closed item is history, not a slot to reuse.** Drift that was fixed, closed,
+and later comes back is a *new* occurrence, so it gets its own item rather than
+resurrecting somebody's completed work — and that item opens with a comment
+naming the closed one it follows, so the recurrence is visible from the item
+itself. "Closed" here means any state the process template counts as **Completed
+or Removed**, not just the one `-ado-closed-state` names, so an item someone
+finished their own way is still finished.
+
+**Permissions.** The token needs **Work Items (Read & Write)** — read as well,
+since the dedup query is a read. Before processing anything, tf-snag issues a
+`validateOnly` create: a bad token, project or work item type fails immediately
+and says which, rather than halfway through raising items. Azure DevOps answers
+an unauthenticated API call with `203` and a sign-in page rather than `401`, so
+that case is reported as "not authenticated" instead of a bare status.
+
+`-ado-token` also accepts a pipeline's `System.AccessToken` — the auth scheme is
+detected from the token's shape, so a PAT and an OAuth bearer both work without
+a flag. Prefer `$TF_SNAG_ADO_TOKEN` so it never reaches a command line.
+
+**`-ado-dry-run`** reports what would be raised and closed without touching
+anything. Worth doing on first adoption. All work-item output goes to stderr, so
+it never contaminates `-format json`/`sarif` on stdout.
+
 ## Azure DevOps
 
 The scheduled job in `../tf-drift-test-resources/pipelines/tf-snag.yml` plans
@@ -356,6 +455,7 @@ Where each lands on the run page:
 | dedicated **tf-snag** tab | `json` attachment + [`extension/`](extension/) | the extension published & installed — see `extension/README.md` |
 | **Scans** tab | `sarif` + `CodeAnalysisLogs` artifact | the "SARIF SAST Scans Tab" extension installed in the org |
 | **Summary** tab section | `markdown` + `task.uploadsummary` | nothing (built in) |
+| **Boards** | `-ado-url`, one work item per finding | a token with Work Items (Read & Write) — see [Work items](#work-items) |
 
 The tf-snag tab (schema 2) splits findings across a **Drift** / **Deprecations** /
 **Pending changes** pivot, each tab carrying its count, its own collapsed
@@ -375,7 +475,12 @@ Early. Parser + text/JSON/markdown/JUnit/SARIF/Teams report + exit codes, covere
 by tests. Deprecation check (`-check deprecations`, from the `terraform plan
 -json` log) surfaces in SARIF, JSON, Teams, text and markdown. Ignore rules (file
 + inline) and `-baseline` provenance flow into JSON (schema 2). Scans-tab,
-Summary, the tf-snag run tab (`extension/`) and Teams notifications are live.
+Summary, the tf-snag run tab (`extension/`), Teams notifications and Azure DevOps
+work items are live.
+
+The run tab shows the work item reference and the "no longer ignored" badge, so
+it needs republishing (manifest `0.5.0`) alongside a release carrying the work
+item feature.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
 `main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,

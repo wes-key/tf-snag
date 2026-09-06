@@ -165,8 +165,11 @@
 
     var drift = report.drift || [];
     var deps = report.deprecations || [];
-    var activeDrift = drift.filter(notSuppressed);
-    var activeDeps = deps.filter(notSuppressed);
+    // Newly actionable findings lead, matching the Teams card: something whose
+    // ignore rule was just removed was deliberately hidden until now, so it is
+    // the most notable thing here.
+    var activeDrift = drift.filter(notSuppressed).sort(byFindingRank);
+    var activeDeps = deps.filter(notSuppressed).sort(byFindingRank);
     var ignoredDrift = drift.filter(isSuppressed);
     var ignoredDeps = deps.filter(isSuppressed);
     var linker = fileLinker(build);
@@ -289,6 +292,13 @@
   function isSuppressed(x) { return !!x.suppressed; }
   function notSuppressed(x) { return !x.suppressed; }
 
+  // 0 = just came out from under an ignore rule, 1 = new, 2 = carried over.
+  function findingRank(x) {
+    if (x.unsuppressed) return 0;
+    return x.baseline_state === "new" ? 1 : 2;
+  }
+  function byFindingRank(a, b) { return findingRank(a) - findingRank(b); }
+
   function bannerHead(nDrift, nDeps) {
     var bits = [];
     if (nDrift) bits.push(nDrift + " resource" + (nDrift === 1 ? "" : "s") + " changed outside Terraform");
@@ -323,9 +333,18 @@
   // from the previous run, otherwise the first-detection date + age. Empty when
   // the run had no -baseline (baseline_state / first_seen unset).
   function provCell(row) {
+    // A finding whose ignore rule was just removed is newly *actionable*, not
+    // newly detected — so it gets its own badge and keeps its real age beside
+    // it. Calling it "new" would misreport how long the drift has been there.
+    if (row.unsuppressed) {
+      var t = ageText(row.first_seen);
+      var cell = el("span", null, [badge("no longer ignored", "new")]);
+      if (t) cell.appendChild(el("div", { class: "tfd-muted tfd-prov-age", text: t }));
+      return cell;
+    }
     if (row.baseline_state === "new") return badge("new", "new");
-    var t = ageText(row.first_seen);
-    return el("span", { class: "tfd-muted", text: t || "—" });
+    var age = ageText(row.first_seen);
+    return el("span", { class: "tfd-muted", text: age || "—" });
   }
 
   function ageText(firstSeen) {
@@ -503,6 +522,19 @@
     return el("div", { class: "tfd-srcline" }, [el("span", { class: "tfd-muted", text: "Source: " }), loc]);
   }
 
+  // workItemLine links the finding to the work item tracking it, when the run
+  // was given -ado-url. Both fields are already in the schema-2 attachment.
+  function workItemLine(row) {
+    if (!row.work_item) return null;
+    var ref = "#" + row.work_item;
+    var label = row.work_item_url
+      ? el("a", { class: "tfd-loc", href: row.work_item_url, target: "_blank", rel: "noopener noreferrer", text: ref })
+      : el("span", { class: "tfd-loc", text: ref });
+    return el("div", { class: "tfd-srcline" }, [
+      el("span", { class: "tfd-muted", text: "Work item: " }), label
+    ]);
+  }
+
   function ruleLine(item) {
     return el("div", { class: "tfd-srcline" }, [
       el("span", { class: "tfd-muted", text: "Rule: " }),
@@ -518,11 +550,13 @@
       // root resources show their file in the Module column; module resources
       // get it here (that column shows the module path for them).
       var src = row.module ? srcLine(linker, row.file, row.line) : null;
+      var wi = workItemLine(row);
       var detail = null;
-      if (attrs.length || src) {
+      if (attrs.length || src || wi) {
         detail = el("div", { class: "tfd-detail-body" });
         if (attrs.length) detail.appendChild(attrTable(attrs));
         if (src) detail.appendChild(src);
+        if (wi) detail.appendChild(wi);
       }
       return {
         sign: { glyph: SIGN[row.action] || "?", cls: "tfd-sign-" + (row.action || "noop") },
@@ -588,7 +622,8 @@
 
   function deprDetail(linker, d) {
     var sites = d.sites || [];
-    if (!d.detail && !sites.length) return null;
+    var wi = workItemLine(d);
+    if (!d.detail && !sites.length && !wi) return null;
     var body = el("div", { class: "tfd-detail-body" });
     if (d.detail) body.appendChild(el("div", { class: "tfd-depr-detail", text: d.detail }));
     if (sites.length) {
@@ -601,6 +636,7 @@
       });
       body.appendChild(ul);
     }
+    if (wi) body.appendChild(wi);
     return body;
   }
 
