@@ -166,7 +166,13 @@ type finding struct {
 func (c *Client) linkOrCreate(f finding, existing map[string]WorkItem, opts Options,
 	eligible func(FindingKind, string) bool, res *Result, w io.Writer) (WorkItem, error) {
 
-	if item, ok := existing[f.id]; ok {
+	// A closed item does not track a live finding. This is the unignore case:
+	// adding an ignore rule closed the item, and removing the rule has to open a
+	// fresh one rather than link to the closed one and leave live drift with
+	// nothing actionable against it. The old item stays as the record of that
+	// period. Only the state tf-snag itself closes with counts — an item someone
+	// closed by hand into another state is treated as theirs to manage.
+	if item, ok := existing[f.id]; ok && !strings.EqualFold(item.State, opts.ClosedState) {
 		res.Existing++
 		return item, nil
 	}
@@ -295,11 +301,7 @@ func driftBody(rr report.ResourceReport, opts Options) string {
 	// First seen columns.
 	b.WriteString(`<div style="margin:0 0 12px 0">`)
 	b.WriteString(badge(titleCase(rr.Action), fill))
-	if rr.BaselineState == "new" {
-		b.WriteString("&nbsp;" + badge("New", colNew))
-	} else if age := firstSeen(rr.FirstSeen); age != "" {
-		b.WriteString("&nbsp;" + muted(age))
-	}
+	b.WriteString(provenanceBadge(rr.BaselineState, rr.Unsuppressed, rr.FirstSeen))
 	b.WriteString(`</div>`)
 
 	if len(rr.Attrs) > 0 {
@@ -348,11 +350,7 @@ func deprBody(d report.Deprecation, opts Options) string {
 
 	b.WriteString(`<div style="margin:0 0 12px 0">`)
 	b.WriteString(badge(titleCase(orDefault(d.Severity, "warning")), fill))
-	if d.BaselineState == "new" {
-		b.WriteString("&nbsp;" + badge("New", colNew))
-	} else if age := firstSeen(d.FirstSeen); age != "" {
-		b.WriteString("&nbsp;" + muted(age))
-	}
+	b.WriteString(provenanceBadge(d.BaselineState, d.Unsuppressed, d.FirstSeen))
 	b.WriteString(`</div>`)
 
 	if d.Detail != "" {
@@ -389,6 +387,26 @@ func whereLine(rr report.ResourceReport) string {
 		parts = append(parts, loc)
 	}
 	return strings.Join(parts, "  ·  ")
+}
+
+// provenanceBadge says why this item exists now. An unignored finding gets its
+// own badge and keeps its real age beside it: the item is new, the finding is
+// not, and conflating the two would misreport how long the drift has been there.
+func provenanceBadge(state string, unsuppressed bool, ts string) string {
+	age := firstSeen(ts)
+	switch {
+	case unsuppressed:
+		s := "&nbsp;" + badge("No longer ignored", colNew)
+		if age != "" {
+			s += "&nbsp;" + muted(age)
+		}
+		return s
+	case state == "new":
+		return "&nbsp;" + badge("New", colNew)
+	case age != "":
+		return "&nbsp;" + muted(age)
+	}
+	return ""
 }
 
 // firstSeen phrases a carried-over finding's age. Empty without a -baseline.

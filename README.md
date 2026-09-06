@@ -274,7 +274,11 @@ the card stays about what needs attention.
 | | |
 |---|---|
 | `findings` (default) | whenever anything un-suppressed was found |
-| `new` | only when a finding was **absent from `-baseline`** |
+| `new` | only when a finding was **absent from `-baseline`**, or has just come out from under an ignore rule |
+
+Under `new`, a finding whose ignore rule has just been removed counts too — it
+was invisible here yesterday and is actionable today.
+
 | `always` | every run, clean or not — use it to prove the webhook works |
 
 `new` is the one that matters on a schedule. Drift nobody has fixed is still
@@ -367,6 +371,13 @@ Adding an ignore rule for a finding that already has an item closes that item
 too, since the finding stops being reported. The history note says exactly that —
 the finding is still detected, but is now covered by a rule — rather than
 claiming the drift went away.
+
+**Removing the rule raises a fresh item.** A closed item does not track a live
+finding, so tf-snag does not link back to it; the old one stays as the record of
+that period. The new item is badged **No longer ignored** rather than *New*, and
+keeps the finding's real first-detected date — the item is new, the drift is not.
+`-teams-notify new` and `-ado-raise new` both fire for this case, which is the
+point: without it the drift would be live, actionable and tracked by nothing.
 
 **Permissions.** The token needs **Work Items (Read & Write)** — read as well,
 since the dedup query is a read. Before processing anything, tf-snag issues a

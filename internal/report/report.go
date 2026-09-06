@@ -52,6 +52,12 @@ type Deprecation struct {
 	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
 	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
 	FirstRunURL   string `json:"first_run_url,omitempty"`  // the CI run that first surfaced it
+	// Unsuppressed marks a finding an ignore rule used to cover and no longer
+	// does. It is deliberately not the same as BaselineState "new": the finding
+	// was detected long before, and FirstSeen still says when. What changed is
+	// that it became actionable, which is what the notify and work item gates
+	// care about.
+	Unsuppressed bool `json:"unsuppressed,omitempty"`
 
 	// Set by the work-item pass when -ado-url is given.
 	WorkItem    int    `json:"work_item,omitempty"` // ADO work item tracking this finding
@@ -118,6 +124,12 @@ type ResourceReport struct {
 	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
 	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
 	FirstRunURL   string `json:"first_run_url,omitempty"`  // the CI run that first surfaced it
+	// Unsuppressed marks a finding an ignore rule used to cover and no longer
+	// does. It is deliberately not the same as BaselineState "new": the finding
+	// was detected long before, and FirstSeen still says when. What changed is
+	// that it became actionable, which is what the notify and work item gates
+	// care about.
+	Unsuppressed bool `json:"unsuppressed,omitempty"`
 
 	// Set by the work-item pass when -ado-url is given.
 	WorkItem    int    `json:"work_item,omitempty"` // ADO work item tracking this finding
@@ -1026,6 +1038,7 @@ type priorResult struct {
 	guid       string
 	firstSeen  string // provenance.firstDetectionTimeUtc, "" if the prior run had none
 	firstRunID string // provenance properties firstDetectionRunUrl
+	suppressed bool   // the prior run had an ignore rule covering this finding
 	matched    bool
 }
 
@@ -1058,6 +1071,10 @@ func ParsePriorSARIF(raw []byte) (*PriorResults, error) {
 				guid:       res.GUID,
 				firstSeen:  firstSeen,
 				firstRunID: res.Provenance.firstRunURL(),
+				// Suppressed findings are written to the log too, so the
+				// baseline records which ones an ignore rule covered. Reading it
+				// back is what lets a later run notice a rule was removed.
+				suppressed: len(res.Suppressions) > 0,
 			}
 		}
 	}
@@ -1128,29 +1145,60 @@ func (pr *PriorResults) StampReport(r *Report) {
 	}
 	now := nowUTC()
 	for i := range r.Drift {
-		st, seen, runURL := pr.matchGUID(resultGUID("resource-drift", r.Drift[i].Address))
-		r.Drift[i].BaselineState = st
-		r.Drift[i].FirstSeen = firstOr(seen, now)
-		r.Drift[i].FirstRunURL = firstOr(runURL, pr.RunURL)
+		m := pr.matchGUID(resultGUID("resource-drift", r.Drift[i].Address))
+		r.Drift[i].BaselineState = m.state
+		r.Drift[i].FirstSeen = firstOr(m.firstSeen, now)
+		r.Drift[i].FirstRunURL = firstOr(m.firstRunURL, pr.RunURL)
+		r.Drift[i].Unsuppressed = m.wasSuppressed && !r.Drift[i].Suppressed
 	}
 	for i := range r.Deprecations {
-		st, seen, runURL := pr.matchGUID(resultGUID("deprecation", r.Deprecations[i].key()))
-		r.Deprecations[i].BaselineState = st
-		r.Deprecations[i].FirstSeen = firstOr(seen, now)
-		r.Deprecations[i].FirstRunURL = firstOr(runURL, pr.RunURL)
+		m := pr.matchGUID(resultGUID("deprecation", r.Deprecations[i].key()))
+		r.Deprecations[i].BaselineState = m.state
+		r.Deprecations[i].FirstSeen = firstOr(m.firstSeen, now)
+		r.Deprecations[i].FirstRunURL = firstOr(m.firstRunURL, pr.RunURL)
+		r.Deprecations[i].Unsuppressed = m.wasSuppressed && !r.Deprecations[i].Suppressed
 	}
 }
 
+// baselineMatch is what the previous run knew about one finding.
+type baselineMatch struct {
+	state         string // "new" | "updated"
+	firstSeen     string
+	firstRunURL   string
+	wasSuppressed bool
+}
+
 // matchGUID looks a finding up by the guid key ParsePriorSARIF stores under
-// ("g:"+guid) and reports its baseline state, prior first-seen time and the run
-// that first surfaced it.
-func (pr *PriorResults) matchGUID(guid string) (state, firstSeen, firstRunURL string) {
+// ("g:"+guid).
+func (pr *PriorResults) matchGUID(guid string) baselineMatch {
 	p, ok := pr.byKey["g:"+guid]
 	if !ok {
-		return "new", "", ""
+		return baselineMatch{state: "new"}
 	}
 	p.matched = true
-	return "updated", p.firstSeen, p.firstRunID
+	return baselineMatch{
+		state:         "updated",
+		firstSeen:     p.firstSeen,
+		firstRunURL:   p.firstRunID,
+		wasSuppressed: p.suppressed,
+	}
+}
+
+// HasNewlyActionable reports whether any finding is either new or has just come
+// out from under an ignore rule — the two ways a run can produce something that
+// warrants attention it did not warrant before.
+func (r *Report) HasNewlyActionable() bool {
+	for i := range r.Drift {
+		if !r.Drift[i].Suppressed && (r.Drift[i].BaselineState == "new" || r.Drift[i].Unsuppressed) {
+			return true
+		}
+	}
+	for i := range r.Deprecations {
+		if !r.Deprecations[i].Suppressed && (r.Deprecations[i].BaselineState == "new" || r.Deprecations[i].Unsuppressed) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstOr(v, fallback string) string {

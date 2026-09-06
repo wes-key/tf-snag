@@ -430,14 +430,17 @@ func adoEligibility(raise string, rep *report.Report, stderr io.Writer) (func(ad
 			fmt.Fprintln(stderr, "tf-snag: -ado-raise new needs -baseline to identify new findings; raising for any un-suppressed finding instead")
 			return nil, nil
 		}
+		// Newly actionable, not merely newly detected: a finding whose ignore
+		// rule was just removed needs an item too. Its old one, if it had one,
+		// was closed when the rule went in.
 		newIDs := map[string]bool{}
 		for _, rr := range rep.Drift {
-			if rr.BaselineState == "new" {
+			if rr.BaselineState == "new" || rr.Unsuppressed {
 				newIDs[rr.FindingID()] = true
 			}
 		}
 		for _, d := range rep.Deprecations {
-			if d.BaselineState == "new" {
+			if d.BaselineState == "new" || d.Unsuppressed {
 				newIDs[d.FindingID()] = true
 			}
 		}
@@ -481,7 +484,10 @@ func teamsShouldPost(rep *report.Report, notify string, stderr io.Writer) bool {
 			fmt.Fprintln(stderr, "tf-snag: -teams-notify new needs -baseline to identify new findings; posting as -teams-notify findings would")
 			return rep.HasGatingFindings()
 		}
-		return rep.HasNewFindings()
+		// Also fires for a finding whose ignore rule has just been removed: it
+		// was invisible here yesterday and is actionable today, which is the
+		// thing "new" is really gating on.
+		return rep.HasNewlyActionable()
 	default: // findings
 		return rep.HasGatingFindings()
 	}

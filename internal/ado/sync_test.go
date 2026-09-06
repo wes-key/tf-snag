@@ -405,3 +405,94 @@ func TestSyncClosingAnIgnoredFindingExplainsItself(t *testing.T) {
 		t.Errorf("history should say the finding is now ignored, got: %q", note)
 	}
 }
+
+// Ignoring a finding closes its item; removing the rule must open a fresh one.
+// Without that, the drift is live, actionable and tracked by nothing — the item
+// having been closed on the way in.
+func TestSyncUnignoredFindingGetsANewItem(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	// Run 1: reported, item raised.
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first := r1.Drift[0].WorkItem
+
+	// Run 2: an ignore rule is added. The item closes.
+	r2 := driftReport("azurerm_x.a")
+	r2.Drift[0].Suppressed = true
+	if _, err := c.Sync(r2, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if f.items[first].State != "Closed" {
+		t.Fatalf("item state = %q, want Closed once ignored", f.items[first].State)
+	}
+
+	// Run 3: the rule is removed. A closed item does not track a live finding,
+	// so a fresh one is raised rather than linking back to the closed one.
+	r3 := driftReport("azurerm_x.a")
+	r3.Drift[0].Unsuppressed = true
+	res, err := c.Sync(r3, opts, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Created) != 1 {
+		t.Fatalf("created %d, want a fresh item for the unignored finding", len(res.Created))
+	}
+	second := r3.Drift[0].WorkItem
+	if second == 0 || second == first {
+		t.Errorf("linked #%d, want a new item distinct from the closed #%d", second, first)
+	}
+	if f.items[first].State != "Closed" {
+		t.Errorf("the original item should stay closed as the record of that period")
+	}
+	// ...and the new item must not immediately close itself in the same pass.
+	if f.items[second].State == "Closed" {
+		t.Errorf("the freshly raised item was closed in the same run")
+	}
+}
+
+// An item still open is linked, not duplicated — the closed-item rule must not
+// leak into the ordinary path.
+func TestSyncOpenItemIsStillReused(t *testing.T) {
+	c, _ := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	r2 := driftReport("azurerm_x.a")
+	res, err := c.Sync(r2, opts, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Created) != 0 || res.Existing != 1 {
+		t.Errorf("created=%d existing=%d, want the open item reused", len(res.Created), res.Existing)
+	}
+	if r2.Drift[0].WorkItem != r1.Drift[0].WorkItem {
+		t.Errorf("linked #%d, want the original #%d", r2.Drift[0].WorkItem, r1.Drift[0].WorkItem)
+	}
+}
+
+func TestProvenanceBadgeDistinguishesUnignoredFromNew(t *testing.T) {
+	newly := provenanceBadge("new", false, "")
+	if !strings.Contains(newly, ">New<") {
+		t.Errorf("new finding badge = %q", newly)
+	}
+	un := provenanceBadge("updated", true, "2026-08-20T06:00:00Z")
+	if !strings.Contains(un, "No longer ignored") {
+		t.Errorf("unignored badge = %q", un)
+	}
+	// It keeps the real age: the item is new, the finding is not.
+	if !strings.Contains(un, "first detected 2026-08-20") {
+		t.Errorf("unignored badge dropped the age, misreporting how long the drift has been there: %q", un)
+	}
+	if strings.Contains(un, ">New<") {
+		t.Errorf("unignored finding should not claim to be newly detected: %q", un)
+	}
+}
