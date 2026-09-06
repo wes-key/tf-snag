@@ -1,0 +1,417 @@
+// Package ado raises and closes Azure DevOps work items for tf-snag findings.
+//
+// A finding's identity is its stable FindingID (the same guid the SARIF result
+// carries). Every work item tf-snag creates is tagged `tf-snag:<id>`, and each
+// run queries those tags back out — so Azure DevOps, not a build artifact, is
+// the record of what has already been raised. That matters: artifact retention
+// expires, pipelines get rebuilt, and a lost baseline must not turn into a
+// second work item for drift that is already being tracked.
+package ado
+
+import (
+	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// apiVersion is pinned: Azure DevOps changes payload shapes between versions,
+// and an unpinned request follows whatever the server defaults to.
+const apiVersion = "7.0"
+
+// DefaultTimeout bounds a single request.
+const DefaultTimeout = 30 * time.Second
+
+// MarkerTag is on every work item tf-snag creates, so one query finds them all
+// regardless of how many findings this run has.
+const MarkerTag = "tf-snag"
+
+// IDTagPrefix prefixes the per-finding tag, e.g. "tf-snag-id:9c1f…".
+//
+// A colon would be neater but Azure DevOps splits tags on some punctuation and
+// normalises case, so the prefix is hyphenated and matching is case-insensitive.
+const IDTagPrefix = "tf-snag-id-"
+
+// Client talks to one Azure DevOps project.
+type Client struct {
+	// OrgURL is the collection root, e.g. https://dev.azure.com/wes-key
+	OrgURL string
+	// Project is the project name or id.
+	Project string
+	// Token is a PAT or an OAuth bearer (System.AccessToken). Which scheme to
+	// use is detected — see authHeader.
+	Token string
+
+	HTTP    *http.Client
+	Timeout time.Duration
+}
+
+// WorkItem is the subset of a work item tf-snag reasons about.
+type WorkItem struct {
+	ID    int
+	State string
+	Title string
+	Tags  []string
+	URL   string // human URL, not the API one
+}
+
+// ParseURL splits a project URL — https://dev.azure.com/org/project — into the
+// org root and project name. Accepts a trailing slash and the older
+// org.visualstudio.com form.
+func ParseURL(raw string) (orgURL, project string, err error) {
+	u, err := url.Parse(strings.TrimRight(strings.TrimSpace(raw), "/"))
+	if err != nil {
+		return "", "", fmt.Errorf("ado: parsing %q: %w", raw, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", "", fmt.Errorf("ado: %q is not an absolute URL (want https://dev.azure.com/<org>/<project>)", raw)
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) == 0 || parts[len(parts)-1] == "" {
+		return "", "", fmt.Errorf("ado: %q has no project segment (want https://dev.azure.com/<org>/<project>)", raw)
+	}
+	project = parts[len(parts)-1]
+	u.Path = "/" + strings.Join(parts[:len(parts)-1], "/")
+	return strings.TrimRight(u.String(), "/"), project, nil
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	t := c.Timeout
+	if t <= 0 {
+		t = DefaultTimeout
+	}
+	return &http.Client{Timeout: t}
+}
+
+// authHeader picks the scheme from the token's shape. A PAT is an opaque string
+// and goes in Basic auth with an empty username; System.AccessToken is a JWT
+// (three dot-separated segments) and must be sent as a bearer. Guessing wrong
+// yields a 203 with a sign-in page rather than a clean 401, so it is worth
+// getting right without asking the caller to declare it.
+func (c *Client) authHeader() string {
+	if t := strings.TrimSpace(c.Token); strings.Count(t, ".") == 2 && strings.HasPrefix(t, "ey") {
+		return "Bearer " + t
+	}
+	return "Basic " + base64.StdEncoding.EncodeToString([]byte(":"+c.Token))
+}
+
+// do issues one request and decodes a JSON response into out (which may be nil).
+func (c *Client) do(method, endpoint string, body any, contentType string, out any) error {
+	var rdr io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("ado: encoding request: %w", err)
+		}
+		rdr = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, endpoint, rdr)
+	if err != nil {
+		return fmt.Errorf("ado: building request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", c.authHeader())
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return fmt.Errorf("ado: %s: %w", describe(method, endpoint), err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+
+	if err := checkStatus(resp, raw, method, endpoint); err != nil {
+		return err
+	}
+	if out == nil {
+		return nil
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("ado: decoding %s response: %w", describe(method, endpoint), err)
+	}
+	return nil
+}
+
+// checkStatus turns a non-2xx into an error that says what to do about it.
+// Azure DevOps answers an unauthenticated API call with 203 and an HTML sign-in
+// page rather than 401, which is otherwise a baffling failure to debug.
+func checkStatus(resp *http.Response, body []byte, method, endpoint string) error {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.StatusCode != http.StatusNonAuthoritativeInfo {
+		return nil
+	}
+	switch resp.StatusCode {
+	case http.StatusNonAuthoritativeInfo, http.StatusUnauthorized:
+		return fmt.Errorf("ado: not authenticated (%s) — check the token is valid and not expired", resp.Status)
+	case http.StatusForbidden:
+		return fmt.Errorf("ado: token lacks permission for %s (%s) — it needs Work Items (Read & Write)",
+			describe(method, endpoint), resp.Status)
+	case http.StatusNotFound:
+		return fmt.Errorf("ado: %s returned %s — check the organisation, project and work item type exist",
+			describe(method, endpoint), resp.Status)
+	}
+	return fmt.Errorf("ado: %s returned %s%s", describe(method, endpoint), resp.Status, detail(body))
+}
+
+// describe names the call without leaking the query string, which can carry a
+// WIQL fragment.
+func describe(method, endpoint string) string {
+	if i := strings.Index(endpoint, "?"); i >= 0 {
+		endpoint = endpoint[:i]
+	}
+	return method + " " + endpoint
+}
+
+// detail appends the API's own message when it sent one.
+func detail(body []byte) string {
+	var e struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.Message != "" {
+		return ": " + strings.Join(strings.Fields(e.Message), " ")
+	}
+	if s := strings.TrimSpace(string(body)); s != "" && !strings.HasPrefix(s, "<") {
+		return ": " + strings.Join(strings.Fields(s), " ")
+	}
+	return ""
+}
+
+func (c *Client) projectURL(path string) string {
+	return fmt.Sprintf("%s/%s/_apis/%s", c.OrgURL, url.PathEscape(c.Project), path)
+}
+
+// --- reading -----------------------------------------------------------------
+
+// Existing returns the work items tf-snag has already raised, keyed by finding
+// id. Two calls regardless of how many findings this run has: one WIQL query for
+// the marker tag, then one batch fetch for the fields.
+//
+// Items whose tags no longer parse into an id are skipped rather than erroring —
+// someone editing tags by hand should not break the run.
+func (c *Client) Existing() (map[string]WorkItem, error) {
+	ids, err := c.queryMarked()
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return map[string]WorkItem{}, nil
+	}
+	items, err := c.batchGet(ids)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string]WorkItem, len(items))
+	for _, it := range items {
+		if id := findingIDFromTags(it.Tags); id != "" {
+			// First wins: if a finding somehow has two items, the older (lower
+			// id) one is the one already referenced elsewhere.
+			if prev, dup := out[id]; !dup || it.ID < prev.ID {
+				out[id] = it
+			}
+		}
+	}
+	return out, nil
+}
+
+// queryMarked runs the WIQL query for every work item carrying the marker tag.
+func (c *Client) queryMarked() ([]int, error) {
+	// Scoped to the project by the URL. Closed items are included on purpose:
+	// a finding that comes back should reopen the conversation on the original
+	// item rather than spawn a second one.
+	q := map[string]string{
+		"query": fmt.Sprintf(
+			"SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project AND [System.Tags] CONTAINS '%s'",
+			MarkerTag),
+	}
+	var res struct {
+		WorkItems []struct {
+			ID int `json:"id"`
+		} `json:"workItems"`
+	}
+	if err := c.do(http.MethodPost, c.projectURL("wit/wiql")+"?api-version="+apiVersion,
+		q, "application/json", &res); err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0, len(res.WorkItems))
+	for _, w := range res.WorkItems {
+		ids = append(ids, w.ID)
+	}
+	return ids, nil
+}
+
+// batchGetLimit is the maximum ids the workitemsbatch endpoint accepts.
+const batchGetLimit = 200
+
+func (c *Client) batchGet(ids []int) ([]WorkItem, error) {
+	var out []WorkItem
+	for start := 0; start < len(ids); start += batchGetLimit {
+		end := start + batchGetLimit
+		if end > len(ids) {
+			end = len(ids)
+		}
+		body := map[string]any{
+			"ids":    ids[start:end],
+			"fields": []string{"System.Id", "System.State", "System.Title", "System.Tags"},
+		}
+		var res struct {
+			Value []struct {
+				ID     int `json:"id"`
+				Fields struct {
+					State string `json:"System.State"`
+					Title string `json:"System.Title"`
+					Tags  string `json:"System.Tags"`
+				} `json:"fields"`
+			} `json:"value"`
+		}
+		if err := c.do(http.MethodPost, c.projectURL("wit/workitemsbatch")+"?api-version="+apiVersion,
+			body, "application/json", &res); err != nil {
+			return nil, err
+		}
+		for _, w := range res.Value {
+			out = append(out, WorkItem{
+				ID:    w.ID,
+				State: w.Fields.State,
+				Title: w.Fields.Title,
+				Tags:  splitTags(w.Fields.Tags),
+				URL:   c.WebURL(w.ID),
+			})
+		}
+	}
+	return out, nil
+}
+
+// WebURL is the browser URL for a work item — what goes in a report, as opposed
+// to the _apis one the REST calls use.
+func (c *Client) WebURL(id int) string {
+	return fmt.Sprintf("%s/%s/_workitems/edit/%d", c.OrgURL, url.PathEscape(c.Project), id)
+}
+
+// splitTags parses the "a; b; c" form the API returns.
+func splitTags(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ";")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// findingIDFromTags pulls the finding id back out of a work item's tags. Azure
+// DevOps normalises tag case, so the comparison is case-insensitive and the id
+// is returned lowercased to match how it was written.
+func findingIDFromTags(tags []string) string {
+	for _, t := range tags {
+		if len(t) > len(IDTagPrefix) && strings.EqualFold(t[:len(IDTagPrefix)], IDTagPrefix) {
+			return strings.ToLower(t[len(IDTagPrefix):])
+		}
+	}
+	return ""
+}
+
+// --- writing -----------------------------------------------------------------
+
+// NewItem is the work item to raise for a finding.
+type NewItem struct {
+	FindingID   string
+	Type        string // Task, Bug, Issue, ... whatever the process template offers
+	Title       string
+	Description string   // HTML
+	Tags        []string // in addition to the marker and id tags
+	AreaPath    string   // optional
+}
+
+type patch struct {
+	Op    string `json:"op"`
+	Path  string `json:"path"`
+	Value any    `json:"value"`
+}
+
+func (c *Client) fields(it NewItem) []patch {
+	tags := append([]string{MarkerTag, IDTagPrefix + it.FindingID}, it.Tags...)
+	ps := []patch{
+		{Op: "add", Path: "/fields/System.Title", Value: it.Title},
+		{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(tags, "; ")},
+	}
+	if it.Description != "" {
+		ps = append(ps, patch{Op: "add", Path: "/fields/System.Description", Value: it.Description})
+	}
+	if it.AreaPath != "" {
+		ps = append(ps, patch{Op: "add", Path: "/fields/System.AreaPath", Value: it.AreaPath})
+	}
+	return ps
+}
+
+// Create raises a work item and returns it.
+func (c *Client) Create(it NewItem) (WorkItem, error) {
+	return c.create(it, false)
+}
+
+// Validate runs the same create with validateOnly, so a misconfigured token,
+// project or work item type is reported before any findings are processed
+// rather than halfway through raising them.
+func (c *Client) Validate(it NewItem) error {
+	_, err := c.create(it, true)
+	return err
+}
+
+func (c *Client) create(it NewItem, validateOnly bool) (WorkItem, error) {
+	endpoint := fmt.Sprintf("%s/%s/_apis/wit/workitems/$%s?api-version=%s",
+		c.OrgURL, url.PathEscape(c.Project), url.PathEscape(it.Type), apiVersion)
+	if validateOnly {
+		endpoint += "&validateOnly=true"
+	}
+	var res struct {
+		ID     int `json:"id"`
+		Fields struct {
+			State string `json:"System.State"`
+			Title string `json:"System.Title"`
+		} `json:"fields"`
+	}
+	// The patch content type is what distinguishes a work item write; sending
+	// application/json gets a 400 that does not say why.
+	if err := c.do(http.MethodPost, endpoint, c.fields(it), "application/json-patch+json", &res); err != nil {
+		return WorkItem{}, err
+	}
+	return WorkItem{ID: res.ID, State: res.Fields.State, Title: res.Fields.Title, URL: c.WebURL(res.ID)}, nil
+}
+
+// Close moves a work item to state and records why in its history. Returns
+// false when the item is already in that state, so callers can report what
+// actually changed.
+func (c *Client) Close(item WorkItem, state, reason string) (bool, error) {
+	if strings.EqualFold(item.State, state) {
+		return false, nil
+	}
+	ps := []patch{{Op: "add", Path: "/fields/System.State", Value: state}}
+	if reason != "" {
+		ps = append(ps, patch{Op: "add", Path: "/fields/System.History", Value: reason})
+	}
+	endpoint := fmt.Sprintf("%s/_apis/wit/workitems/%d?api-version=%s", c.OrgURL, item.ID, apiVersion)
+	if err := c.do(http.MethodPatch, endpoint, ps, "application/json-patch+json", nil); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// Comment appends a note to a work item's history — used to record that a
+// finding is still present, without touching its state.
+func (c *Client) Comment(id int, text string) error {
+	ps := []patch{{Op: "add", Path: "/fields/System.History", Value: text}}
+	endpoint := fmt.Sprintf("%s/_apis/wit/workitems/%d?api-version=%s", c.OrgURL, id, apiVersion)
+	return c.do(http.MethodPatch, endpoint, ps, "application/json-patch+json", nil)
+}

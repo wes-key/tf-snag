@@ -52,6 +52,10 @@ type Deprecation struct {
 	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
 	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
 	FirstRunURL   string `json:"first_run_url,omitempty"`  // the CI run that first surfaced it
+
+	// Set by the work-item pass when -ado-url is given.
+	WorkItem    int    `json:"work_item,omitempty"` // ADO work item tracking this finding
+	WorkItemURL string `json:"work_item_url,omitempty"`
 }
 
 // DeprecationSite is one place a deprecation fires — a resource address and,
@@ -114,6 +118,10 @@ type ResourceReport struct {
 	BaselineState string `json:"baseline_state,omitempty"` // "new" | "updated"
 	FirstSeen     string `json:"first_seen,omitempty"`     // RFC3339, first detection time
 	FirstRunURL   string `json:"first_run_url,omitempty"`  // the CI run that first surfaced it
+
+	// Set by the work-item pass when -ado-url is given.
+	WorkItem    int    `json:"work_item,omitempty"` // ADO work item tracking this finding
+	WorkItemURL string `json:"work_item_url,omitempty"`
 }
 
 // AttachSourceLocations fills File/Line on each drift resource from src (keyed
@@ -959,6 +967,21 @@ func sarifLevel(action string) string {
 var sarifNS = [16]byte{
 	0x7d, 0x3a, 0x2c, 0x91, 0x4b, 0x8e, 0x4f, 0x1a,
 	0x9c, 0x6d, 0x2e, 0x5f, 0x0a, 0x1b, 0x3c, 0x4d,
+}
+
+// FindingID is a finding's stable identity across runs — the same value the
+// SARIF result carries as its guid. It is what lets a tracker recognise an
+// existing item for this finding rather than raising a duplicate every day, so
+// it must stay derived from the address alone: anything that changes when the
+// drift changes (attribute values, counts, wording) would break the match.
+func (rr ResourceReport) FindingID() string {
+	return resultGUID("resource-drift", rr.Address)
+}
+
+// FindingID is the deprecation's equivalent, keyed on summary + detail so all
+// the sites tripping one notice share a single identity.
+func (d Deprecation) FindingID() string {
+	return resultGUID("deprecation", d.key())
 }
 
 // resultGUID derives a deterministic RFC 4122 v5 UUID from the finding's kind
