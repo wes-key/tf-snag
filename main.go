@@ -95,7 +95,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	adoArea := fs.String("ado-area", "", "area `path` for new work items (default: the project root)")
 	adoRaise := fs.String("ado-raise", "new", "which findings get a work item: `new` (absent from -baseline) or findings (anything un-suppressed)")
 	adoClose := fs.Bool("ado-close", false, "close work items whose finding is no longer reported")
-	adoClosedState := fs.String("ado-closed-state", "Closed", "`state` to move a resolved finding's work item to; depends on the process template (Closed, Done, Removed)")
+	adoClosedState := fs.String("ado-closed-state", "", "`state` to move a resolved finding's work item to; default: the work item type's own completed state (Closed on Agile, Done on Scrum and Basic)")
 	adoDryRun := fs.Bool("ado-dry-run", false, "report the work items that would be raised or closed, without changing anything")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
@@ -396,6 +396,23 @@ func syncWorkItems(rep *report.Report, cfg adoConfig, stderr io.Writer) int {
 	}); err != nil {
 		fmt.Fprintln(stderr, "tf-snag: cannot raise work items:", err)
 		return 2
+	}
+
+	// Closing is a state transition, which the create check above does not
+	// exercise at all — so resolve and verify the state now, before a finding
+	// disappearing turns into a 400 mid-run. An empty -ado-closed-state picks
+	// the type's own completed state, which is what makes this work unchanged on
+	// Agile ("Closed"), Scrum and Basic ("Done").
+	if cfg.closeItems {
+		state, err := client.ResolveClosedState(cfg.itemType, cfg.closedState)
+		if err != nil {
+			fmt.Fprintln(stderr, "tf-snag:", err)
+			return 2
+		}
+		if cfg.closedState == "" {
+			fmt.Fprintf(stderr, "tf-snag: closing resolved %s work items as %q\n", cfg.itemType, state)
+		}
+		opts.ClosedState = state
 	}
 
 	res, err := client.Sync(rep, opts, eligible, stderr)

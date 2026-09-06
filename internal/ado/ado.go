@@ -323,6 +323,68 @@ func findingIDFromTags(tags []string) string {
 	return ""
 }
 
+// State is one state a work item type can be in, and the category the process
+// template files it under. Categories are stable across templates even though
+// the names are not: Agile ends at "Closed", Scrum and Basic at "Done".
+type State struct {
+	Name     string `json:"name"`
+	Category string `json:"category"` // Proposed, InProgress, Resolved, Completed, Removed
+}
+
+// States lists the states a work item type supports. Used to resolve or check
+// the closed state before anything is closed, because the alternative is a 400
+// halfway through a run that says only that the value is unsupported.
+func (c *Client) States(itemType string) ([]State, error) {
+	endpoint := fmt.Sprintf("%s/%s/_apis/wit/workitemtypes/%s/states?api-version=%s",
+		c.OrgURL, url.PathEscape(c.Project), url.PathEscape(itemType), apiVersion)
+	var res struct {
+		Value []State `json:"value"`
+	}
+	if err := c.do(http.MethodGet, endpoint, nil, "", &res); err != nil {
+		return nil, err
+	}
+	return res.Value, nil
+}
+
+// ResolveClosedState decides which state a resolved finding's item moves to.
+//
+// An empty want picks the type's own completed state, so the common templates
+// work with no configuration: Agile gets "Closed", Scrum and Basic "Done". A
+// supplied value is checked against the list and, if wrong, the error names what
+// is actually available — the raw API failure says only that the value is not
+// supported, without saying what is.
+func (c *Client) ResolveClosedState(itemType, want string) (string, error) {
+	states, err := c.States(itemType)
+	if err != nil {
+		return "", err
+	}
+	if len(states) == 0 {
+		if want == "" {
+			return "", fmt.Errorf("ado: %q has no states to close into", itemType)
+		}
+		return want, nil // nothing to check against; let the PATCH decide
+	}
+
+	names := make([]string, 0, len(states))
+	for _, s := range states {
+		names = append(names, s.Name)
+		if want != "" && strings.EqualFold(s.Name, want) {
+			return s.Name, nil
+		}
+	}
+	if want != "" {
+		return "", fmt.Errorf("ado: %q is not a state of %q — this project's are: %s",
+			want, itemType, strings.Join(names, ", "))
+	}
+	for _, s := range states {
+		if strings.EqualFold(s.Category, "Completed") {
+			return s.Name, nil
+		}
+	}
+	return "", fmt.Errorf("ado: %q has no completed state to close into (states: %s); pass -ado-closed-state",
+		itemType, strings.Join(names, ", "))
+}
+
 // --- writing -----------------------------------------------------------------
 
 // NewItem is the work item to raise for a finding.

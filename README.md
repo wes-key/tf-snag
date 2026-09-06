@@ -92,7 +92,8 @@ tf-snag -plan plan.json [flags]
   -ado-area path      area path for new work items
   -ado-raise when     new (absent from -baseline) or findings (default "new")
   -ado-close          close work items whose finding is no longer reported
-  -ado-closed-state s state a resolved finding's item moves to (default "Closed")
+  -ado-closed-state s state a resolved finding's item moves to; default: the
+                      work item type's own completed state
   -ado-dry-run        report what would be raised or closed, change nothing
   -exit-code          exit 2 when an un-suppressed drift or deprecation is
                       detected (default true)
@@ -362,8 +363,13 @@ regardless of the mode, so `work_item` / `work_item_url` are on the report for
 every downstream format to show.
 
 **Closing.** `-ado-close` moves items whose finding is no longer reported to
-`-ado-closed-state` (default `Closed` — process templates differ; Scrum uses
-`Done`, and `Removed` is also common) and records why in the item's history.
+`-ado-closed-state` and records why in the item's history. That state defaults to
+whichever one the work item type files under the **Completed** category, so Agile
+projects close into `Closed` and Scrum and Basic into `Done` with nothing to
+configure. A value you supply is checked against the type's real states before
+anything is closed — the raw API failure only says the value is unsupported,
+without saying what is supported, and it does not surface until the first run
+where a finding disappears.
 It is opt-in on purpose: creating items is additive, but closing them mutates
 work someone may have triaged, re-assigned or linked.
 

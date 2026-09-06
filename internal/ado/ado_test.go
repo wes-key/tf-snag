@@ -270,3 +270,53 @@ func TestSplitAndFindTags(t *testing.T) {
 		t.Errorf("findingIDFromTags with no id tag = %q, want empty", got)
 	}
 }
+
+// The closed state is a process-template concern: Agile ends at "Closed", Scrum
+// and Basic at "Done". Getting it wrong produces a 400 only when a finding
+// disappears, so it is resolved and checked up front instead.
+func TestResolveClosedState(t *testing.T) {
+	basic := []State{
+		{Name: "To Do", Category: "Proposed"},
+		{Name: "Doing", Category: "InProgress"},
+		{Name: "Done", Category: "Completed"},
+	}
+	newStates := func(s []State) *Client {
+		return stub(t, map[string]http.HandlerFunc{
+			"workitemtypes": func(w http.ResponseWriter, r *http.Request) {
+				json.NewEncoder(w).Encode(map[string]any{"value": s})
+			},
+		})
+	}
+
+	// No preference: take the type's own completed state.
+	got, err := newStates(basic).ResolveClosedState("Task", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Done" {
+		t.Errorf("resolved %q, want Done from the Completed category", got)
+	}
+
+	// A supplied state that exists is honoured, and its canonical casing used.
+	if got, err := newStates(basic).ResolveClosedState("Task", "done"); err != nil || got != "Done" {
+		t.Errorf("ResolveClosedState(done) = %q, %v — want the canonical Done", got, err)
+	}
+
+	// A supplied state that does not exist fails now, naming what does. This is
+	// the case that used to surface as an opaque 400 mid-run.
+	_, err = newStates(basic).ResolveClosedState("Task", "Closed")
+	if err == nil {
+		t.Fatal("expected an error for a state the template does not have")
+	}
+	for _, want := range []string{"Closed", "To Do", "Doing", "Done"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should name the offending state and the valid ones, missing %q: %v", want, err)
+		}
+	}
+
+	// A type with no completed state cannot be closed into automatically.
+	_, err = newStates([]State{{Name: "New", Category: "Proposed"}}).ResolveClosedState("Task", "")
+	if err == nil || !strings.Contains(err.Error(), "-ado-closed-state") {
+		t.Errorf("error should point at the flag: %v", err)
+	}
+}
