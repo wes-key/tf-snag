@@ -31,6 +31,11 @@ const DefaultTimeout = 30 * time.Second
 // regardless of how many findings this run has.
 const MarkerTag = "tf-snag"
 
+// IgnoredTag marks an item whose finding is currently covered by an ignore rule.
+// It is what stops the note below being posted again on every subsequent run —
+// a daily "still ignored" comment for months would be worse than useless.
+const IgnoredTag = "tf-snag-ignored"
+
 // IDTagPrefix prefixes the per-finding tag, e.g. "tf-snag-id:9c1f…".
 //
 // A colon would be neater but Azure DevOps splits tags on some punctuation and
@@ -470,10 +475,45 @@ func (c *Client) Close(item WorkItem, state, reason string) (bool, error) {
 	return true, nil
 }
 
-// Comment appends a note to a work item's history — used to record that a
-// finding is still present, without touching its state.
-func (c *Client) Comment(id int, text string) error {
+// HasTag reports whether the item carries tag, case-insensitively — Azure DevOps
+// normalises tag case.
+func (w WorkItem) HasTag(tag string) bool {
+	for _, t := range w.Tags {
+		if strings.EqualFold(t, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// Note appends to a work item's history and, in the same patch, adds or removes
+// tags. State is untouched: this is how tf-snag says something about an item it
+// does not own the lifecycle of.
+//
+// Tags are sent whole — Azure DevOps has no add/remove operation for them — so
+// the list is recomputed from what the item already had.
+func (c *Client) Note(item WorkItem, text string, add, remove []string) error {
 	ps := []patch{{Op: "add", Path: "/fields/System.History", Value: text}}
-	endpoint := fmt.Sprintf("%s/_apis/wit/workitems/%d?api-version=%s", c.OrgURL, id, apiVersion)
+
+	if len(add) > 0 || len(remove) > 0 {
+		drop := make(map[string]bool, len(remove))
+		for _, t := range remove {
+			drop[strings.ToLower(t)] = true
+		}
+		tags := make([]string, 0, len(item.Tags)+len(add))
+		for _, t := range item.Tags {
+			if !drop[strings.ToLower(t)] {
+				tags = append(tags, t)
+			}
+		}
+		for _, t := range add {
+			if !item.HasTag(t) {
+				tags = append(tags, t)
+			}
+		}
+		ps = append(ps, patch{Op: "add", Path: "/fields/System.Tags", Value: strings.Join(tags, "; ")})
+	}
+
+	endpoint := fmt.Sprintf("%s/_apis/wit/workitems/%d?api-version=%s", c.OrgURL, item.ID, apiVersion)
 	return c.do(http.MethodPatch, endpoint, ps, "application/json-patch+json", nil)
 }

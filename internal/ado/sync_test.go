@@ -94,10 +94,19 @@ func newFake(t *testing.T, seed ...WorkItem) (*Client, *fake) {
 			json.NewDecoder(r.Body).Decode(&ps)
 			f.patched[id] = append(f.patched[id], ps...)
 			for _, p := range ps {
-				if p.Path == "/fields/System.State" {
-					if it := f.items[id]; it != nil {
-						it.State, _ = p.Value.(string)
-					}
+				it := f.items[id]
+				if it == nil {
+					continue
+				}
+				switch p.Path {
+				case "/fields/System.State":
+					it.State, _ = p.Value.(string)
+				case "/fields/System.Tags":
+					// Azure DevOps replaces the whole tag list on a patch, so the
+					// fake must too — otherwise a lost finding-id tag would go
+					// unnoticed here.
+					s, _ := p.Value.(string)
+					it.Tags = splitTags(s)
 				}
 			}
 			io.WriteString(w, `{"id":0,"fields":{}}`)
@@ -361,100 +370,6 @@ func TestTitlesAreDistinctAndClipped(t *testing.T) {
 	}
 }
 
-// Adding an ignore rule for a finding that already has a work item closes that
-// item, because a suppressed finding is not in the "still reported" set. That is
-// arguably right — you have decided not to act on it — but the history note must
-// not claim the finding went away, because it did not.
-func TestSyncClosingAnIgnoredFindingExplainsItself(t *testing.T) {
-	c, f := newFake(t)
-
-	r1 := driftReport("azurerm_x.a")
-	if _, err := c.Sync(r1, defaultOpts(), nil, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	id := r1.Drift[0].WorkItem
-
-	// Same finding, now suppressed by an ignore rule.
-	opts := defaultOpts()
-	opts.Close = true
-	r2 := driftReport("azurerm_x.a")
-	r2.Drift[0].Suppressed = true
-	r2.Drift[0].SuppressReason = "temp tag — JIRA-123"
-
-	res, err := c.Sync(r2, opts, nil, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Closed) != 1 {
-		t.Fatalf("closed %d items, want the ignored finding's item closed", len(res.Closed))
-	}
-	if f.items[id].State != "Closed" {
-		t.Errorf("state = %q, want Closed", f.items[id].State)
-	}
-
-	var note string
-	for _, p := range f.patched[id] {
-		if p.Path == "/fields/System.History" {
-			note, _ = p.Value.(string)
-		}
-	}
-	if strings.Contains(note, "no longer reported") {
-		t.Errorf("history claims the finding went away, but it was ignored: %q", note)
-	}
-	if !strings.Contains(strings.ToLower(note), "ignore") {
-		t.Errorf("history should say the finding is now ignored, got: %q", note)
-	}
-}
-
-// Ignoring a finding closes its item; removing the rule must open a fresh one.
-// Without that, the drift is live, actionable and tracked by nothing — the item
-// having been closed on the way in.
-func TestSyncUnignoredFindingGetsANewItem(t *testing.T) {
-	c, f := newFake(t)
-	opts := defaultOpts()
-	opts.Close = true
-
-	// Run 1: reported, item raised.
-	r1 := driftReport("azurerm_x.a")
-	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	first := r1.Drift[0].WorkItem
-
-	// Run 2: an ignore rule is added. The item closes.
-	r2 := driftReport("azurerm_x.a")
-	r2.Drift[0].Suppressed = true
-	if _, err := c.Sync(r2, opts, nil, io.Discard); err != nil {
-		t.Fatal(err)
-	}
-	if f.items[first].State != "Closed" {
-		t.Fatalf("item state = %q, want Closed once ignored", f.items[first].State)
-	}
-
-	// Run 3: the rule is removed. A closed item does not track a live finding,
-	// so a fresh one is raised rather than linking back to the closed one.
-	r3 := driftReport("azurerm_x.a")
-	r3.Drift[0].Unsuppressed = true
-	res, err := c.Sync(r3, opts, nil, io.Discard)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Created) != 1 {
-		t.Fatalf("created %d, want a fresh item for the unignored finding", len(res.Created))
-	}
-	second := r3.Drift[0].WorkItem
-	if second == 0 || second == first {
-		t.Errorf("linked #%d, want a new item distinct from the closed #%d", second, first)
-	}
-	if f.items[first].State != "Closed" {
-		t.Errorf("the original item should stay closed as the record of that period")
-	}
-	// ...and the new item must not immediately close itself in the same pass.
-	if f.items[second].State == "Closed" {
-		t.Errorf("the freshly raised item was closed in the same run")
-	}
-}
-
 // An item still open is linked, not duplicated — the closed-item rule must not
 // leak into the ordinary path.
 func TestSyncOpenItemIsStillReused(t *testing.T) {
@@ -494,5 +409,127 @@ func TestProvenanceBadgeDistinguishesUnignoredFromNew(t *testing.T) {
 	}
 	if strings.Contains(un, ">New<") {
 		t.Errorf("unignored finding should not claim to be newly detected: %q", un)
+	}
+}
+
+// Ignoring a finding does not close its item. Closing would put it in the
+// template's Completed state — telling the board work was delivered when nobody
+// did any — and the item may by now be triaged or in a sprint.
+func TestSyncIgnoringCommentsRatherThanClosing(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	id := r1.Drift[0].WorkItem
+	stateBefore := f.items[id].State
+
+	r2 := driftReport("azurerm_x.a")
+	r2.Drift[0].Suppressed = true
+	res, err := c.Sync(r2, opts, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(res.Closed) != 0 {
+		t.Errorf("closed %d items for an ignored finding, want none", len(res.Closed))
+	}
+	if f.items[id].State != stateBefore {
+		t.Errorf("state moved to %q — an ignored finding is not a finished one", f.items[id].State)
+	}
+	if len(res.Noted) != 1 {
+		t.Fatalf("noted %d, want a comment on the item", len(res.Noted))
+	}
+
+	var note string
+	for _, p := range f.patched[id] {
+		if p.Path == "/fields/System.History" {
+			note, _ = p.Value.(string)
+		}
+	}
+	if !strings.Contains(note, "ignore rule") || !strings.Contains(note, "still there") {
+		t.Errorf("comment should say the drift remains and why it stopped being reported: %q", note)
+	}
+	// Tagged so it is not repeated.
+	if !f.items[id].HasTag(IgnoredTag) {
+		t.Errorf("item not tagged %q, so the note would repeat every run", IgnoredTag)
+	}
+}
+
+// ...and it says so once, not every morning for the next six months.
+func TestSyncDoesNotRepeatTheIgnoredComment(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	id := r1.Drift[0].WorkItem
+
+	ignoredRun := func() Result {
+		r := driftReport("azurerm_x.a")
+		r.Drift[0].Suppressed = true
+		res, err := c.Sync(r, opts, nil, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res
+	}
+	ignoredRun()
+	after := len(f.patched[id])
+	if n := len(ignoredRun().Noted); n != 0 {
+		t.Errorf("second ignored run noted %d, want 0", n)
+	}
+	if len(f.patched[id]) != after {
+		t.Errorf("second ignored run patched the item again")
+	}
+}
+
+// Removing the rule resumes on the same item — it was never closed — and
+// retracts the note.
+func TestSyncUnignoringResumesTheSameItem(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	id := r1.Drift[0].WorkItem
+
+	r2 := driftReport("azurerm_x.a")
+	r2.Drift[0].Suppressed = true
+	if _, err := c.Sync(r2, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	r3 := driftReport("azurerm_x.a")
+	r3.Drift[0].Unsuppressed = true
+	res, err := c.Sync(r3, opts, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Created) != 0 {
+		t.Errorf("created %d items, want the original reused", len(res.Created))
+	}
+	if r3.Drift[0].WorkItem != id {
+		t.Errorf("linked #%d, want the original #%d", r3.Drift[0].WorkItem, id)
+	}
+	if f.items[id].HasTag(IgnoredTag) {
+		t.Errorf("%q not removed once the rule was gone", IgnoredTag)
+	}
+	if len(res.Noted) != 1 {
+		t.Errorf("noted %d, want the retraction comment", len(res.Noted))
+	}
+	// The finding id tag must survive the tag rewrite, or the next run cannot
+	// find this item at all.
+	if findingIDFromTags(f.items[id].Tags) == "" {
+		t.Error("the finding id tag was lost when the ignored tag was removed")
 	}
 }

@@ -373,17 +373,24 @@ where a finding disappears.
 It is opt-in on purpose: creating items is additive, but closing them mutates
 work someone may have triaged, re-assigned or linked.
 
-Adding an ignore rule for a finding that already has an item closes that item
-too, since the finding stops being reported. The history note says exactly that —
-the finding is still detected, but is now covered by a rule — rather than
-claiming the drift went away.
+**Ignoring a finding does not close its item.** Closing would move it into the
+template's *Completed* state — telling the board the work was delivered when
+nobody did any — and by then the item may have been triaged, assigned or pulled
+into a sprint, which is not tf-snag's to unwind. Instead it comments once, saying
+the drift is still there and tf-snag has stopped reporting it, and tags the item
+`tf-snag-ignored` so the note is not repeated on every later run. Whether to
+close it is left to a person.
 
-**Removing the rule raises a fresh item.** A closed item does not track a live
-finding, so tf-snag does not link back to it; the old one stays as the record of
-that period. The new item is badged **No longer ignored** rather than *New*, and
-keeps the finding's real first-detected date — the item is new, the drift is not.
-`-teams-notify new` and `-ado-raise new` both fire for this case, which is the
-point: without it the drift would be live, actionable and tracked by nothing.
+**Removing the rule resumes on the same item.** It was never closed, so there is
+nothing to reopen and no second item: the note is retracted, the tag removed, and
+the finding is badged **No longer ignored** rather than *New* — it keeps its real
+first-detected date, because the tracking is what changed, not the drift.
+`-teams-notify new` and `-ado-raise new` both fire for it, and both surfaces sort
+it to the top.
+
+An item that tf-snag *did* close, for a finding that genuinely went away, does
+not count as tracking that finding any more. If the same drift returns later it
+gets a new item, with the old one left as the record of the earlier fix.
 
 **Permissions.** The token needs **Work Items (Read & Write)** — read as well,
 since the dedup query is a read. Before processing anything, tf-snag issues a

@@ -425,8 +425,8 @@ func syncWorkItems(rep *report.Report, cfg adoConfig, stderr io.Writer) int {
 	if cfg.dryRun {
 		verb = "would raise"
 	}
-	fmt.Fprintf(stderr, "work items: %s %d, closed %d, already tracked %d\n",
-		verb, len(res.Created), len(res.Closed), res.Existing)
+	fmt.Fprintf(stderr, "work items: %s %d, closed %d, commented %d, already tracked %d\n",
+		verb, len(res.Created), len(res.Closed), len(res.Noted), res.Existing)
 	for _, ch := range res.Created {
 		if ch.ID != 0 {
 			fmt.Fprintf(stderr, "  #%d %s\n", ch.ID, ch.URL)

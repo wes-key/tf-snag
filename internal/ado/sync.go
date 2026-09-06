@@ -27,8 +27,9 @@ type Options struct {
 type Result struct {
 	Created  []Change
 	Closed   []Change
-	Existing int // findings already tracked, left alone
-	Skipped  int // findings not eligible (not new)
+	Noted    []Change // commented on, state untouched
+	Existing int      // findings already tracked, left alone
+	Skipped  int      // findings not eligible (not new)
 }
 
 // Change is one work item created or closed.
@@ -118,21 +119,41 @@ func (c *Client) Sync(r *report.Report, opts Options, eligible func(FindingKind,
 
 	for _, id := range gone {
 		item := existing[id]
+
+		// An ignored finding is not a finished one. Closing it would put the
+		// item in the template's Completed state, telling the board work was
+		// delivered when nobody did any — and the item may by now be triaged,
+		// assigned or in a sprint, which is not tf-snag's to unwind. Say so and
+		// leave the decision to a person.
+		if ignored[id] {
+			if item.HasTag(IgnoredTag) {
+				continue // already said so on an earlier run
+			}
+			if opts.DryRun {
+				fmt.Fprintf(w, "  would comment on #%d (%s) — now covered by an ignore rule\n", item.ID, item.Title)
+				res.Noted = append(res.Noted, Change{ID: item.ID, URL: item.URL, Title: item.Title})
+				continue
+			}
+			note := "tf-snag: this finding is now covered by an ignore rule, so tf-snag has stopped " +
+				"reporting it. The drift is still there — this item is left open for you to close or keep." +
+				runSuffix(opts)
+			if err := c.Note(item, note, []string{IgnoredTag}, nil); err != nil {
+				return res, err
+			}
+			res.Noted = append(res.Noted, Change{ID: item.ID, URL: item.URL, Title: item.Title})
+			continue
+		}
+
 		if strings.EqualFold(item.State, opts.ClosedState) {
 			continue // already closed on a previous run
 		}
-		why, note := "no longer reported", "Closed by tf-snag: this finding is no longer reported."
-		if ignored[id] {
-			why = "now covered by an ignore rule"
-			note = "Closed by tf-snag: this finding is now covered by an ignore rule, so it is no longer tracked here. " +
-				"It is still detected — remove the rule to start tracking it again."
-		}
 		if opts.DryRun {
-			fmt.Fprintf(w, "  would close #%d (%s) — %s\n", item.ID, item.Title, why)
+			fmt.Fprintf(w, "  would close #%d (%s) — no longer reported\n", item.ID, item.Title)
 			res.Closed = append(res.Closed, Change{ID: item.ID, URL: item.URL, Title: item.Title})
 			continue
 		}
-		changed, err := c.Close(item, opts.ClosedState, note+runSuffix(opts))
+		changed, err := c.Close(item, opts.ClosedState,
+			"Closed by tf-snag: this finding is no longer reported."+runSuffix(opts))
 		if err != nil {
 			return res, err
 		}
@@ -166,14 +187,29 @@ type finding struct {
 func (c *Client) linkOrCreate(f finding, existing map[string]WorkItem, opts Options,
 	eligible func(FindingKind, string) bool, res *Result, w io.Writer) (WorkItem, error) {
 
-	// A closed item does not track a live finding. This is the unignore case:
-	// adding an ignore rule closed the item, and removing the rule has to open a
-	// fresh one rather than link to the closed one and leave live drift with
-	// nothing actionable against it. The old item stays as the record of that
-	// period. Only the state tf-snag itself closes with counts — an item someone
-	// closed by hand into another state is treated as theirs to manage.
+	// A closed item does not track a live finding. That covers drift which was
+	// fixed, closed, and has since come back: the old item records the earlier
+	// fix, and the recurrence needs its own. Only the state tf-snag itself
+	// closes with counts — an item someone closed by hand into another state is
+	// treated as theirs to manage.
+	//
+	// Ignoring a finding no longer closes anything, so the ignore/unignore cycle
+	// stays on one item throughout; see the note retraction below.
 	if item, ok := existing[f.id]; ok && !strings.EqualFold(item.State, opts.ClosedState) {
 		res.Existing++
+		// The rule that hid this finding has been removed, so retract the note
+		// saying it was ignored. The item stayed open throughout, which is why
+		// this resumes on the original rather than opening a second one.
+		if item.HasTag(IgnoredTag) {
+			if opts.DryRun {
+				fmt.Fprintf(w, "  would comment on #%d (%s) — no longer ignored\n", item.ID, item.Title)
+			} else if err := c.Note(item,
+				"tf-snag: the ignore rule covering this finding has been removed, so it is being "+
+					"reported again."+runSuffix(opts), nil, []string{IgnoredTag}); err != nil {
+				return WorkItem{}, err
+			}
+			res.Noted = append(res.Noted, Change{ID: item.ID, URL: item.URL, Title: item.Title})
+		}
 		return item, nil
 	}
 	if eligible != nil && !eligible(f.kind, f.id) {
