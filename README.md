@@ -363,6 +363,11 @@ every downstream format to show.
 It is opt-in on purpose: creating items is additive, but closing them mutates
 work someone may have triaged, re-assigned or linked.
 
+Adding an ignore rule for a finding that already has an item closes that item
+too, since the finding stops being reported. The history note says exactly that —
+the finding is still detected, but is now covered by a rule — rather than
+claiming the drift went away.
+
 **Permissions.** The token needs **Work Items (Read & Write)** — read as well,
 since the dedup query is a read. Before processing anything, tf-snag issues a
 `validateOnly` create: a bad token, project or work item type fails immediately

@@ -360,3 +360,48 @@ func TestTitlesAreDistinctAndClipped(t *testing.T) {
 		t.Errorf("deprecation title = %q", p)
 	}
 }
+
+// Adding an ignore rule for a finding that already has a work item closes that
+// item, because a suppressed finding is not in the "still reported" set. That is
+// arguably right — you have decided not to act on it — but the history note must
+// not claim the finding went away, because it did not.
+func TestSyncClosingAnIgnoredFindingExplainsItself(t *testing.T) {
+	c, f := newFake(t)
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, defaultOpts(), nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	id := r1.Drift[0].WorkItem
+
+	// Same finding, now suppressed by an ignore rule.
+	opts := defaultOpts()
+	opts.Close = true
+	r2 := driftReport("azurerm_x.a")
+	r2.Drift[0].Suppressed = true
+	r2.Drift[0].SuppressReason = "temp tag — JIRA-123"
+
+	res, err := c.Sync(r2, opts, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Closed) != 1 {
+		t.Fatalf("closed %d items, want the ignored finding's item closed", len(res.Closed))
+	}
+	if f.items[id].State != "Closed" {
+		t.Errorf("state = %q, want Closed", f.items[id].State)
+	}
+
+	var note string
+	for _, p := range f.patched[id] {
+		if p.Path == "/fields/System.History" {
+			note, _ = p.Value.(string)
+		}
+	}
+	if strings.Contains(note, "no longer reported") {
+		t.Errorf("history claims the finding went away, but it was ignored: %q", note)
+	}
+	if !strings.Contains(strings.ToLower(note), "ignore") {
+		t.Errorf("history should say the finding is now ignored, got: %q", note)
+	}
+}

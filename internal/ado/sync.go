@@ -57,8 +57,13 @@ func (c *Client) Sync(r *report.Report, opts Options, eligible func(FindingKind,
 	// ignored finding is one someone has already decided not to act on, so
 	// raising work for it would be perverse.
 	seen := map[string]bool{}
+	// Suppressed findings are tracked separately so pass 2 can tell "the drift
+	// went away" from "someone added an ignore rule" — both stop the finding
+	// being reported, but they are not the same news for whoever reads the item.
+	ignored := map[string]bool{}
 	for i := range r.Drift {
 		if r.Drift[i].Suppressed {
+			ignored[r.Drift[i].FindingID()] = true
 			continue
 		}
 		f := finding{
@@ -77,6 +82,7 @@ func (c *Client) Sync(r *report.Report, opts Options, eligible func(FindingKind,
 	}
 	for i := range r.Deprecations {
 		if r.Deprecations[i].Suppressed {
+			ignored[r.Deprecations[i].FindingID()] = true
 			continue
 		}
 		f := finding{
@@ -113,13 +119,18 @@ func (c *Client) Sync(r *report.Report, opts Options, eligible func(FindingKind,
 		if strings.EqualFold(item.State, opts.ClosedState) {
 			continue // already closed on a previous run
 		}
+		why, note := "no longer reported", "Closed by tf-snag: this finding is no longer reported."
+		if ignored[id] {
+			why = "now covered by an ignore rule"
+			note = "Closed by tf-snag: this finding is now covered by an ignore rule, so it is no longer tracked here. " +
+				"It is still detected — remove the rule to start tracking it again."
+		}
 		if opts.DryRun {
-			fmt.Fprintf(w, "  would close #%d (%s) — no longer reported\n", item.ID, item.Title)
+			fmt.Fprintf(w, "  would close #%d (%s) — %s\n", item.ID, item.Title, why)
 			res.Closed = append(res.Closed, Change{ID: item.ID, URL: item.URL, Title: item.Title})
 			continue
 		}
-		changed, err := c.Close(item, opts.ClosedState,
-			"Closed by tf-snag: this finding is no longer reported."+runSuffix(opts))
+		changed, err := c.Close(item, opts.ClosedState, note+runSuffix(opts))
 		if err != nil {
 			return res, err
 		}
