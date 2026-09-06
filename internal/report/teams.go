@@ -92,12 +92,16 @@ func (r *Report) teamsPayload(opts TeamsOptions) teamsMessage {
 	// New findings lead, so with the list capped it is the things that appeared
 	// since the last run that survive the cut.
 	if len(drift) > 0 {
-		drift = teamsNewFirst(drift, func(rr ResourceReport) bool { return rr.BaselineState == "new" })
+		drift = teamsByRank(drift, func(rr ResourceReport) int {
+			return findingRank(rr.Unsuppressed, rr.BaselineState)
+		})
 		body = append(body, teamsGroup("drift", "Changed outside Terraform", len(drift),
 			teamsDriftItems(drift, max))...)
 	}
 	if len(depr) > 0 {
-		depr = teamsNewFirst(depr, func(d Deprecation) bool { return d.BaselineState == "new" })
+		depr = teamsByRank(depr, func(d Deprecation) int {
+			return findingRank(d.Unsuppressed, d.BaselineState)
+		})
 		body = append(body, teamsGroup("depr", "Deprecations", len(depr),
 			teamsDeprItems(depr, max))...)
 	}
@@ -352,18 +356,31 @@ func teamsCountNew(drift []ResourceReport, depr []Deprecation) int {
 	return n
 }
 
-// teamsNewFirst reorders findings so new ones lead, preserving the relative
-// order within each half.
-func teamsNewFirst[T any](items []T, isNew func(T) bool) []T {
-	out := make([]T, 0, len(items))
-	for _, it := range items {
-		if isNew(it) {
-			out = append(out, it)
-		}
+// findingRank orders what leads the list. Something whose ignore rule was just
+// removed comes first: it was deliberately hidden until now, so its reappearance
+// is the most notable thing in the post. Then genuinely new findings, then
+// everything carried over.
+func findingRank(unsuppressed bool, baselineState string) int {
+	switch {
+	case unsuppressed:
+		return 0
+	case baselineState == "new":
+		return 1
+	default:
+		return 2
 	}
-	for _, it := range items {
-		if !isNew(it) {
-			out = append(out, it)
+}
+
+// teamsByRank is a stable sort into rank order, so within a rank the report's
+// own ordering survives. It matters because the list is capped: whatever leads
+// is what a reader actually sees.
+func teamsByRank[T any](items []T, rank func(T) int) []T {
+	out := make([]T, 0, len(items))
+	for r := 0; r <= 2; r++ {
+		for _, it := range items {
+			if rank(it) == r {
+				out = append(out, it)
+			}
 		}
 	}
 	return out

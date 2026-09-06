@@ -165,8 +165,11 @@
 
     var drift = report.drift || [];
     var deps = report.deprecations || [];
-    var activeDrift = drift.filter(notSuppressed);
-    var activeDeps = deps.filter(notSuppressed);
+    // Newly actionable findings lead, matching the Teams card: something whose
+    // ignore rule was just removed was deliberately hidden until now, so it is
+    // the most notable thing here.
+    var activeDrift = drift.filter(notSuppressed).sort(byFindingRank);
+    var activeDeps = deps.filter(notSuppressed).sort(byFindingRank);
     var ignoredDrift = drift.filter(isSuppressed);
     var ignoredDeps = deps.filter(isSuppressed);
     var linker = fileLinker(build);
@@ -288,6 +291,13 @@
 
   function isSuppressed(x) { return !!x.suppressed; }
   function notSuppressed(x) { return !x.suppressed; }
+
+  // 0 = just came out from under an ignore rule, 1 = new, 2 = carried over.
+  function findingRank(x) {
+    if (x.unsuppressed) return 0;
+    return x.baseline_state === "new" ? 1 : 2;
+  }
+  function byFindingRank(a, b) { return findingRank(a) - findingRank(b); }
 
   function bannerHead(nDrift, nDeps) {
     var bits = [];
