@@ -398,6 +398,22 @@ func syncWorkItems(rep *report.Report, cfg adoConfig, stderr io.Writer) int {
 		return 2
 	}
 
+	// Whether an existing item is still open decides whether a finding links to
+	// it or gets a fresh one, so the type's finished states are needed on every
+	// run, not only when closing. Best effort: if the lookup fails, fall back to
+	// matching the closed state by name rather than abandoning the run.
+	if cats, err := client.StateCategories(cfg.itemType); err != nil {
+		fmt.Fprintf(stderr, "tf-snag: could not read %s states (%v); treating only %q as closed\n",
+			cfg.itemType, err, cfg.closedState)
+	} else {
+		opts.Terminal = map[string]bool{}
+		for name, cat := range cats {
+			if cat == "Completed" || cat == "Removed" {
+				opts.Terminal[name] = true
+			}
+		}
+	}
+
 	// Closing is a state transition, which the create check above does not
 	// exercise at all — so resolve and verify the state now, before a finding
 	// disappearing turns into a 400 mid-run. An empty -ado-closed-state picks
@@ -427,6 +443,9 @@ func syncWorkItems(rep *report.Report, cfg adoConfig, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "work items: %s %d, closed %d, commented %d, already tracked %d\n",
 		verb, len(res.Created), len(res.Closed), len(res.Noted), res.Existing)
+	if n := len(res.Duplicates); n > 0 {
+		fmt.Fprintf(stderr, "  %d finding(s) have more than one open work item; see the notes above\n", n)
+	}
 	for _, ch := range res.Created {
 		if ch.ID != 0 {
 			fmt.Fprintf(stderr, "  #%d %s\n", ch.ID, ch.URL)

@@ -21,6 +21,13 @@ type Options struct {
 	DryRun      bool   // report what would happen, change nothing
 	RunURL      string // this run, linked from the item body
 	Context     string // pipeline / branch / run, for the item body
+
+	// Terminal is the lower-cased set of the type's finished states — every
+	// state in the Completed or Removed category, not just ClosedState. Whether
+	// an item is done has to be judged on the whole set: a person closing an
+	// item as "Removed" has still closed it, and a run that matched only
+	// ClosedState would treat theirs as open.
+	Terminal map[string]bool
 }
 
 // Result is what a pass did, for the caller to report.
@@ -30,6 +37,35 @@ type Result struct {
 	Noted    []Change // commented on, state untouched
 	Existing int      // findings already tracked, left alone
 	Skipped  int      // findings not eligible (not new)
+
+	// Duplicates is the tracked item of each finding that turned out to have
+	// more than one open item — left alone, reported so a person can tidy up.
+	Duplicates []Change
+}
+
+// finished reports whether an item is in a state its process template counts as
+// done. Falls back to the configured closed state when the category set is
+// unavailable, and treats "no closed state configured" as nothing being closed.
+func (o Options) finished(item WorkItem) bool {
+	if len(o.Terminal) > 0 {
+		return o.Terminal[strings.ToLower(item.State)]
+	}
+	return o.ClosedState != "" && strings.EqualFold(item.State, o.ClosedState)
+}
+
+// tracking picks the item that represents a finding *now*: the oldest one still
+// open. Closed items are history — a finding that comes back gets a fresh item
+// (which links to the closed one) rather than resurrecting somebody's completed
+// work. Picking the oldest item outright, open or not, is what produced endless
+// duplicates: a closed original hid the open item that had superseded it, so
+// every run raised another.
+func (o Options) tracking(items []WorkItem) (WorkItem, bool) {
+	for _, it := range items {
+		if !o.finished(it) {
+			return it, true
+		}
+	}
+	return WorkItem{}, false
 }
 
 // Change is one work item created or closed.
@@ -107,18 +143,25 @@ func (c *Client) Sync(r *report.Report, opts Options, eligible func(FindingKind,
 		return res, nil
 	}
 
-	// Pass 2: close items whose finding is gone. Iterated in id order so a run's
+	// Pass 2: close items whose finding is gone. Every open item for the finding,
+	// not just one — a project that collected duplicates before they were fixed
+	// should not need them closed by hand. Iterated in id order so a run's
 	// output is stable and diffable.
-	gone := make([]string, 0, len(existing))
-	for id := range existing {
-		if !seen[id] {
-			gone = append(gone, id)
+	var gone []WorkItem
+	for id, items := range existing {
+		if seen[id] {
+			continue
+		}
+		for _, it := range items {
+			if !opts.finished(it) {
+				gone = append(gone, it)
+			}
 		}
 	}
-	sort.Slice(gone, func(i, j int) bool { return existing[gone[i]].ID < existing[gone[j]].ID })
+	sort.Slice(gone, func(i, j int) bool { return gone[i].ID < gone[j].ID })
 
-	for _, id := range gone {
-		item := existing[id]
+	for _, item := range gone {
+		id := findingIDFromTags(item.Tags)
 
 		// An ignored finding is not a finished one. Closing it would put the
 		// item in the template's Completed state, telling the board work was
@@ -144,9 +187,6 @@ func (c *Client) Sync(r *report.Report, opts Options, eligible func(FindingKind,
 			continue
 		}
 
-		if strings.EqualFold(item.State, opts.ClosedState) {
-			continue // already closed on a previous run
-		}
 		if opts.DryRun {
 			fmt.Fprintf(w, "  would close #%d (%s) — no longer reported\n", item.ID, item.Title)
 			res.Closed = append(res.Closed, Change{ID: item.ID, URL: item.URL, Title: item.Title})
@@ -184,22 +224,28 @@ type finding struct {
 // linkOrCreate returns the item tracking f, raising one if it is missing and the
 // finding is eligible. A zero WorkItem means nothing tracks it and nothing was
 // raised.
-func (c *Client) linkOrCreate(f finding, existing map[string]WorkItem, opts Options,
+func (c *Client) linkOrCreate(f finding, existing map[string][]WorkItem, opts Options,
 	eligible func(FindingKind, string) bool, res *Result, w io.Writer) (WorkItem, error) {
 
-	// A closed item does not track a live finding. That covers drift which was
-	// fixed, closed, and has since come back: the old item records the earlier
-	// fix, and the recurrence needs its own. Only the state tf-snag itself
-	// closes with counts — an item someone closed by hand into another state is
-	// treated as theirs to manage.
-	//
-	// Ignoring a finding no longer closes anything, so the ignore/unignore cycle
-	// stays on one item throughout; see the note retraction below.
-	if item, ok := existing[f.id]; ok && !strings.EqualFold(item.State, opts.ClosedState) {
+	items := existing[f.id]
+
+	// One finding, one *open* work item. Any open item for this id is the item,
+	// whatever state it is in and whoever moved it there, so a long-standing
+	// finding keeps pointing at the item raised for it on day one.
+	if item, ok := opts.tracking(items); ok {
 		res.Existing++
+
+		// Duplicates raised before this was fixed are reported, not touched.
+		// They are open items on somebody's board; which to keep is a decision,
+		// and tf-snag closing them wholesale would make it for them.
+		if extra := openIDs(items, opts, item.ID); len(extra) > 0 {
+			res.Duplicates = append(res.Duplicates, Change{ID: item.ID, URL: item.URL, Title: item.Title})
+			fmt.Fprintf(w, "  note: #%d also has open duplicate(s) %s — tracking #%d, close the rest by hand\n",
+				item.ID, joinIDs(extra), item.ID)
+		}
+
 		// The rule that hid this finding has been removed, so retract the note
-		// saying it was ignored. The item stayed open throughout, which is why
-		// this resumes on the original rather than opening a second one.
+		// saying it was ignored.
 		if item.HasTag(IgnoredTag) {
 			if opts.DryRun {
 				fmt.Fprintf(w, "  would comment on #%d (%s) — no longer ignored\n", item.ID, item.Title)
@@ -216,8 +262,21 @@ func (c *Client) linkOrCreate(f finding, existing map[string]WorkItem, opts Opti
 		res.Skipped++
 		return WorkItem{}, nil
 	}
+
+	// Every item for this finding is closed (or there never was one). The
+	// finding has come back, so it gets its own item — and, so the recurrence is
+	// not silent, a comment pointing at the most recent closed one.
+	var prev WorkItem
+	if len(items) > 0 {
+		prev = items[len(items)-1]
+	}
+
 	if opts.DryRun {
-		fmt.Fprintf(w, "  would create %s: %s\n", opts.Type, f.title)
+		if prev.ID != 0 {
+			fmt.Fprintf(w, "  would create %s: %s (superseding closed #%d)\n", opts.Type, f.title, prev.ID)
+		} else {
+			fmt.Fprintf(w, "  would create %s: %s\n", opts.Type, f.title)
+		}
 		res.Created = append(res.Created, Change{Title: f.title})
 		return WorkItem{}, nil
 	}
@@ -234,7 +293,47 @@ func (c *Client) linkOrCreate(f finding, existing map[string]WorkItem, opts Opti
 		return WorkItem{}, err
 	}
 	res.Created = append(res.Created, Change{ID: item.ID, URL: item.URL, Title: item.Title})
+
+	if prev.ID != 0 {
+		note := fmt.Sprintf("tf-snag: this finding was previously tracked by %s, which is now %s. "+
+			"It is being reported again, so this item was raised in its place.%s",
+			itemRef(prev), orDefault(prev.State, "closed"), runSuffix(opts))
+		// A failed comment must not lose the item that was just created — the id
+		// tag is already on it, so say so and carry on.
+		if err := c.Note(item, note, nil, nil); err != nil {
+			fmt.Fprintf(w, "  warning: created #%d but could not link it to #%d: %v\n", item.ID, prev.ID, err)
+		}
+	}
 	return item, nil
+}
+
+// openIDs is the ids of every open item in items other than keep.
+func openIDs(items []WorkItem, opts Options, keep int) []int {
+	var out []int
+	for _, it := range items {
+		if it.ID != keep && !opts.finished(it) {
+			out = append(out, it.ID)
+		}
+	}
+	return out
+}
+
+func joinIDs(ids []int) string {
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = fmt.Sprintf("#%d", id)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// itemRef is how one work item refers to another in a history comment: the
+// "#123" form Azure DevOps auto-links, plus the absolute URL for anywhere that
+// does not (email notifications, exports).
+func itemRef(item WorkItem) string {
+	if item.URL == "" {
+		return fmt.Sprintf("#%d", item.ID)
+	}
+	return fmt.Sprintf(`<a href="%s">#%d</a>`, esc(item.URL), item.ID)
 }
 
 // --- item content ------------------------------------------------------------

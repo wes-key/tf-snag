@@ -87,6 +87,7 @@ func TestExistingMapsFindingIDs(t *testing.T) {
 		},
 		"wit/workitemsbatch": func(w http.ResponseWriter, r *http.Request) {
 			io.WriteString(w, `{"value":[
+              {"id":14,"fields":{"System.State":"Active","System.Title":"drift b again","System.Tags":"tf-snag; tf-snag-id-bbb"}},
               {"id":11,"fields":{"System.State":"Active","System.Title":"drift a","System.Tags":"tf-snag; tf-snag-id-AAA; drift"}},
               {"id":12,"fields":{"System.State":"Closed","System.Title":"drift b","System.Tags":"tf-snag; tf-snag-id-bbb"}},
               {"id":13,"fields":{"System.State":"New","System.Title":"hand made","System.Tags":"tf-snag"}}
@@ -100,21 +101,26 @@ func TestExistingMapsFindingIDs(t *testing.T) {
 	}
 	// Azure DevOps normalises tag case, so lookups must be case-insensitive:
 	// "tf-snag-id-AAA" has to come back under "aaa".
-	if item, ok := got["aaa"]; !ok || item.ID != 11 || item.State != "Active" {
-		t.Errorf("id aaa = %+v (ok=%v), want work item 11 Active", item, ok)
+	if items := got["aaa"]; len(items) != 1 || items[0].ID != 11 || items[0].State != "Active" {
+		t.Errorf("id aaa = %+v, want just work item 11 Active", items)
 	}
-	// Closed items are returned too: a finding that comes back should reopen the
-	// conversation on its original item, not spawn a second one.
-	if item, ok := got["bbb"]; !ok || item.ID != 12 {
-		t.Errorf("closed item missing from Existing: %+v", got)
+	// Every item for a finding comes back, oldest first — including closed ones.
+	// Collapsing to one was the duplicate bug: a closed original hid the open
+	// item that had superseded it, so every run raised another.
+	items := got["bbb"]
+	if len(items) != 2 {
+		t.Fatalf("id bbb = %+v, want both items", items)
+	}
+	if items[0].ID != 12 || items[1].ID != 14 {
+		t.Errorf("id bbb ordered %d, %d — want oldest first", items[0].ID, items[1].ID)
 	}
 	// An item carrying only the marker tag has no finding id and is ignored
 	// rather than erroring — someone may have added the tag by hand.
 	if len(got) != 2 {
-		t.Errorf("Existing() = %d items, want 2 (the untagged one skipped)", len(got))
+		t.Errorf("Existing() = %d findings, want 2 (the untagged item skipped)", len(got))
 	}
-	if got["aaa"].URL == "" || !strings.Contains(got["aaa"].URL, "_workitems/edit/11") {
-		t.Errorf("web URL = %q, want a browser link", got["aaa"].URL)
+	if u := got["aaa"][0].URL; u == "" || !strings.Contains(u, "_workitems/edit/11") {
+		t.Errorf("web URL = %q, want a browser link", u)
 	}
 }
 

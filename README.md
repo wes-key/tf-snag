@@ -388,9 +388,22 @@ first-detected date, because the tracking is what changed, not the drift.
 `-teams-notify new` and `-ado-raise new` both fire for it, and both surfaces sort
 it to the top.
 
-An item that tf-snag *did* close, for a finding that genuinely went away, does
-not count as tracking that finding any more. If the same drift returns later it
-gets a new item, with the old one left as the record of the earlier fix.
+**One finding, one open work item.** That is what the id tag is for: while an
+item for a finding is open, every run links to it and none raises a second,
+whoever moved it wherever on the board.
+
+If a finding turns out to have **more than one** open item — duplicates raised
+before this was tightened — tf-snag tracks the oldest, names the others in the
+run output, and touches none of them. They are open items on somebody's board;
+which to keep is a decision, not a cleanup.
+
+**A closed item is history, not a slot to reuse.** Drift that was fixed, closed,
+and later comes back is a *new* occurrence, so it gets its own item rather than
+resurrecting somebody's completed work — and that item opens with a comment
+naming the closed one it follows, so the recurrence is visible from the item
+itself. "Closed" here means any state the process template counts as **Completed
+or Removed**, not just the one `-ado-closed-state` names, so an item someone
+finished their own way is still finished.
 
 **Permissions.** The token needs **Work Items (Read & Write)** — read as well,
 since the dedup query is a read. Before processing anything, tf-snag issues a

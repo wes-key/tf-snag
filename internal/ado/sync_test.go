@@ -120,6 +120,20 @@ func newFake(t *testing.T, seed ...WorkItem) (*Client, *fake) {
 	return &Client{OrgURL: srv.URL, Project: "proj", Token: "pat", HTTP: srv.Client()}, f
 }
 
+// history is everything written to an item's discussion, oldest first.
+func (f *fake) history(id int) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, p := range f.patched[id] {
+		if p.Path == "/fields/System.History" {
+			s, _ := p.Value.(string)
+			out = append(out, s)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
 func driftReport(addrs ...string) *report.Report {
 	var rc []plan.ResourceChange
 	for _, a := range addrs {
@@ -531,5 +545,205 @@ func TestSyncUnignoringResumesTheSameItem(t *testing.T) {
 	// find this item at all.
 	if findingIDFromTags(f.items[id].Tags) == "" {
 		t.Error("the finding id tag was lost when the ignored tag was removed")
+	}
+}
+
+// The duplicate bug, pinned. An open item is the item: whatever else exists for
+// the finding, and whatever state it is in, the finding links to it and no
+// second item is raised.
+func TestSyncNeverDuplicatesAnOpenItem(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	id := r1.Drift[0].WorkItem
+
+	// Three more runs reporting the same drift, with the item moved along the
+	// board in between — none of that is a reason for a new item.
+	for _, state := range []string{"Active", "Doing", "Active"} {
+		f.items[id].State = state
+		r := driftReport("azurerm_x.a")
+		res, err := c.Sync(r, opts, nil, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Created) != 0 {
+			t.Errorf("state %q: created %d items for a finding already tracked by #%d", state, len(res.Created), id)
+		}
+		if r.Drift[0].WorkItem != id {
+			t.Errorf("state %q: linked #%d, want #%d", state, r.Drift[0].WorkItem, id)
+		}
+	}
+	if len(f.created) != 1 {
+		t.Errorf("server saw %d creates, want 1", len(f.created))
+	}
+}
+
+// The compounding form of the same bug: once an original had been closed, a
+// lookup that kept only the oldest item hid the open one that had superseded it,
+// so every single run raised another duplicate.
+func TestSyncPrefersTheOpenItemOverAClosedOlderOne(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	// Run 1 raises #1; the drift is fixed, so run 2 closes it.
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first := r1.Drift[0].WorkItem
+	if _, err := c.Sync(driftReport(), opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	// It comes back: a fresh item, because #1 is somebody's finished work.
+	r3 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r3, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	second := r3.Drift[0].WorkItem
+	if second == first || second == 0 {
+		t.Fatalf("second run linked #%d, want a new item alongside closed #%d", second, first)
+	}
+
+	// And now the part that was broken: the closed #1 must not shadow the open
+	// #2 on every subsequent run.
+	for i := 0; i < 3; i++ {
+		r := driftReport("azurerm_x.a")
+		res, err := c.Sync(r, opts, nil, io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(res.Created) != 0 {
+			t.Fatalf("run %d raised another duplicate; open #%d should have been found", i+3, second)
+		}
+		if r.Drift[0].WorkItem != second {
+			t.Errorf("run %d linked #%d, want the open #%d", i+3, r.Drift[0].WorkItem, second)
+		}
+	}
+	if len(f.created) != 2 {
+		t.Errorf("server saw %d creates over the whole cycle, want 2", len(f.created))
+	}
+}
+
+// A finding that comes back after its item was closed gets a new item — and that
+// item says where it came from, so the recurrence is not silent.
+func TestSyncLinksANewItemToItsClosedPredecessor(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first := r1.Drift[0].WorkItem
+	if _, err := c.Sync(driftReport(), opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	r3 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r3, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	second := r3.Drift[0].WorkItem
+
+	history := f.history(second)
+	if !strings.Contains(history, fmt.Sprintf("#%d", first)) {
+		t.Errorf("new item #%d does not reference closed #%d; history = %q", second, first, history)
+	}
+	if !strings.Contains(history, "reported again") {
+		t.Errorf("comment does not say why the item was raised: %q", history)
+	}
+	// The closed item stays closed. Reopening it would reuse somebody's
+	// completed work as the record of a fresh occurrence.
+	if !strings.EqualFold(f.items[first].State, opts.ClosedState) {
+		t.Errorf("closed item #%d moved to %q", first, f.items[first].State)
+	}
+}
+
+// An item a person closed into some other terminal state is finished too — the
+// process template says so, not the single name -ado-closed-state carries.
+func TestSyncTreatsAnyTerminalStateAsClosed(t *testing.T) {
+	c, f := newFake(t)
+	opts := defaultOpts()
+	opts.Close = true
+	opts.Terminal = map[string]bool{"closed": true, "removed": true}
+
+	r1 := driftReport("azurerm_x.a")
+	if _, err := c.Sync(r1, opts, nil, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	first := r1.Drift[0].WorkItem
+	f.items[first].State = "Removed" // somebody decided this was not worth doing
+
+	r2 := driftReport("azurerm_x.a")
+	res, err := c.Sync(r2, opts, nil, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Created) != 1 {
+		t.Fatalf("created %d, want a fresh item — #%d is finished", len(res.Created), first)
+	}
+	if f.items[first].State != "Removed" {
+		t.Errorf("state = %q, want the human's decision left alone", f.items[first].State)
+	}
+}
+
+// Duplicates raised before this was fixed are somebody's open board items.
+// Report them; do not quietly close them.
+func TestSyncReportsButDoesNotTouchExistingDuplicates(t *testing.T) {
+	id := report.ResourceReport{Address: "azurerm_x.a"}.FindingID()
+	tags := []string{MarkerTag, IDTagPrefix + id, "drift"}
+	c, f := newFake(t,
+		WorkItem{ID: 5, State: "Active", Title: "first", Tags: tags},
+		WorkItem{ID: 6, State: "Active", Title: "duplicate", Tags: tags},
+	)
+	opts := defaultOpts()
+	opts.Close = true
+
+	var out strings.Builder
+	r := driftReport("azurerm_x.a")
+	res, err := c.Sync(r, opts, nil, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Created) != 0 || len(f.created) != 0 {
+		t.Errorf("raised a third item for a finding with two")
+	}
+	if r.Drift[0].WorkItem != 5 {
+		t.Errorf("linked #%d, want the oldest open item #5", r.Drift[0].WorkItem)
+	}
+	if len(res.Duplicates) != 1 || !strings.Contains(out.String(), "#6") {
+		t.Errorf("the duplicate was not reported: %q", out.String())
+	}
+	if f.items[6].State != "Active" {
+		t.Errorf("duplicate #6 moved to %q — it should be left for a person", f.items[6].State)
+	}
+}
+
+func TestStateCategories(t *testing.T) {
+	c := stub(t, map[string]http.HandlerFunc{
+		"workitemtypes": func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"value": []State{
+				{Name: "To Do", Category: "Proposed"},
+				{Name: "Doing", Category: "InProgress"},
+				{Name: "Done", Category: "Completed"},
+			}})
+		},
+	})
+	got, err := c.StateCategories("Task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keyed lower-case, because a state read back off a work item carries
+	// whatever casing the server felt like.
+	if got["done"] != "Completed" || got["to do"] != "Proposed" {
+		t.Errorf("StateCategories = %v", got)
 	}
 }

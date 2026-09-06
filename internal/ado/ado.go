@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -196,34 +197,52 @@ func (c *Client) projectURL(path string) string {
 
 // --- reading -----------------------------------------------------------------
 
-// Existing returns the work items tf-snag has already raised, keyed by finding
-// id. Two calls regardless of how many findings this run has: one WIQL query for
-// the marker tag, then one batch fetch for the fields.
+// Existing returns the work items tf-snag has already raised, grouped by finding
+// id and ordered oldest first. Two calls regardless of how many findings this
+// run has: one WIQL query for the marker tag, then one batch fetch for the
+// fields.
 //
 // Items whose tags no longer parse into an id are skipped rather than erroring —
 // someone editing tags by hand should not break the run.
-func (c *Client) Existing() (map[string]WorkItem, error) {
+func (c *Client) Existing() (map[string][]WorkItem, error) {
 	ids, err := c.queryMarked()
 	if err != nil {
 		return nil, err
 	}
 	if len(ids) == 0 {
-		return map[string]WorkItem{}, nil
+		return map[string][]WorkItem{}, nil
 	}
 	items, err := c.batchGet(ids)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make(map[string]WorkItem, len(items))
+	// Every item for a finding, oldest first — not just one. Collapsing to a
+	// single item here was a bug: it kept the lowest id, so once an original had
+	// been closed the caller never saw the open item that superseded it and
+	// raised another duplicate on every run.
+	out := map[string][]WorkItem{}
 	for _, it := range items {
 		if id := findingIDFromTags(it.Tags); id != "" {
-			// First wins: if a finding somehow has two items, the older (lower
-			// id) one is the one already referenced elsewhere.
-			if prev, dup := out[id]; !dup || it.ID < prev.ID {
-				out[id] = it
-			}
+			out[id] = append(out[id], it)
 		}
+	}
+	for id := range out {
+		sort.Slice(out[id], func(i, j int) bool { return out[id][i].ID < out[id][j].ID })
+	}
+	return out, nil
+}
+
+// StateCategories maps each of a work item type's states to its process-template
+// category, so "is this finished" does not depend on recognising a state name.
+func (c *Client) StateCategories(itemType string) (map[string]string, error) {
+	states, err := c.States(itemType)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(states))
+	for _, s := range states {
+		out[strings.ToLower(s.Name)] = s.Category
 	}
 	return out, nil
 }
@@ -460,6 +479,10 @@ func (c *Client) create(it NewItem, validateOnly bool) (WorkItem, error) {
 // Close moves a work item to state and records why in its history. Returns
 // false when the item is already in that state, so callers can report what
 // actually changed.
+//
+// There is deliberately no Reopen. A closed item is somebody's finished piece of
+// work with its own history; when the same finding comes back it gets a fresh
+// item that links to the closed one, rather than that record being reused.
 func (c *Client) Close(item WorkItem, state, reason string) (bool, error) {
 	if strings.EqualFold(item.State, state) {
 		return false, nil
