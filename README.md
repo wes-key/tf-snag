@@ -418,6 +418,7 @@ Where each lands on the run page:
 | dedicated **tf-snag** tab | `json` attachment + [`extension/`](extension/) | the extension published & installed — see `extension/README.md` |
 | **Scans** tab | `sarif` + `CodeAnalysisLogs` artifact | the "SARIF SAST Scans Tab" extension installed in the org |
 | **Summary** tab section | `markdown` + `task.uploadsummary` | nothing (built in) |
+| **Boards** | `-ado-url`, one work item per finding | a token with Work Items (Read & Write) — see [Work items](#work-items) |
 
 The tf-snag tab (schema 2) splits findings across a **Drift** / **Deprecations** /
 **Pending changes** pivot, each tab carrying its count, its own collapsed
@@ -437,7 +438,11 @@ Early. Parser + text/JSON/markdown/JUnit/SARIF/Teams report + exit codes, covere
 by tests. Deprecation check (`-check deprecations`, from the `terraform plan
 -json` log) surfaces in SARIF, JSON, Teams, text and markdown. Ignore rules (file
 + inline) and `-baseline` provenance flow into JSON (schema 2). Scans-tab,
-Summary, the tf-snag run tab (`extension/`) and Teams notifications are live.
+Summary, the tf-snag run tab (`extension/`), Teams notifications and Azure DevOps
+work items are live.
+
+Known gap: the work item reference is carried in the JSON (`work_item`,
+`work_item_url`) but the run tab does not render it yet.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
 `main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,

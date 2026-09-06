@@ -374,6 +374,11 @@ func identityOf(attrs map[string]any) string {
 	return ""
 }
 
+// SummaryLine is the one-line description used when a drifted resource has no
+// attribute diff worth showing — created or destroyed outside Terraform, where
+// diffing against a nil side would just list every attribute.
+func (rr ResourceReport) SummaryLine() string { return rr.summaryLine() }
+
 // summaryLine is the one-line description of a drifted resource, used instead of
 // an attribute dump for create/delete and as the JUnit failure body.
 func (rr ResourceReport) summaryLine() string {

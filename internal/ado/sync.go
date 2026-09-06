@@ -6,7 +6,9 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/wes-key/tf-snag/internal/plan"
 	"github.com/wes-key/tf-snag/internal/report"
 )
 
@@ -207,55 +209,202 @@ func deprTitle(d report.Deprecation) string {
 	return clip("Terraform deprecation: "+d.Summary, titleMax)
 }
 
-// driftBody is the work item description. HTML, because that is what the
-// System.Description field renders.
-func driftBody(rr report.ResourceReport, opts Options) string {
+// The work item description is HTML with inline styles — Azure DevOps keeps
+// those, unlike Teams, so the run tab's design carries over almost intact:
+// coloured badges, a ruled header, a red/green attribute diff.
+//
+// Two constraints shape the choices below. There is no stylesheet to hang
+// classes off, so every rule is inline. And the description renders under
+// whichever theme the reader has, so tinted panel backgrounds are avoided —
+// solid-filled badges with white text read correctly on light and dark alike,
+// which is the same reason they are the one element worth filling.
+const (
+	colDelete = "#c50f1f" // delete, replace
+	colUpdate = "#ca5010" // update
+	colCreate = "#107c10" // create
+	colNew    = "#2a5bd7" // new since the baseline
+	colMuted  = "#767676" // secondary text, readable either theme
+	colRule   = "#c8c8c8" // table and divider lines
+)
+
+// badge is the run tab's pill: solid fill, white text, rounded. The one thing
+// Teams could not render and Azure DevOps can.
+func badge(text, fill string) string {
+	return fmt.Sprintf(
+		`<span style="background:%s;color:#ffffff;padding:2px 9px;border-radius:10px;`+
+			`font-size:11px;font-weight:600;white-space:nowrap">%s</span>`, fill, esc(text))
+}
+
+// mono renders an address or value the way the tab's <code> does.
+func mono(s string) string {
+	return fmt.Sprintf(`<span style="font-family:Consolas,Menlo,monospace;font-size:12px">%s</span>`, esc(s))
+}
+
+// muted is a secondary line — a module path, a source location.
+func muted(s string) string {
+	return fmt.Sprintf(`<span style="color:%s;font-size:12px">%s</span>`, colMuted, esc(s))
+}
+
+// header is the coloured rule and title every item opens with, mirroring the
+// tab's tinted banner without relying on a background that has to survive both
+// themes.
+func header(glyph, title, fill, sub string) string {
 	var b strings.Builder
-	b.WriteString("<p>tf-snag found this resource changed outside Terraform.</p>")
-	fmt.Fprintf(&b, "<p><b>Resource:</b> <code>%s</code><br/>", esc(rr.Address))
-	if rr.Module != "" {
-		fmt.Fprintf(&b, "<b>Module:</b> <code>%s</code><br/>", esc(rr.Module))
+	fmt.Fprintf(&b, `<div style="border-left:4px solid %s;padding:2px 0 2px 10px;margin:0 0 12px 0">`, fill)
+	fmt.Fprintf(&b, `<span style="color:%s;font-weight:700;font-size:15px">%s</span> `, fill, esc(glyph))
+	fmt.Fprintf(&b, `<span style="font-weight:700;font-size:15px">%s</span>`, esc(title))
+	if sub != "" {
+		fmt.Fprintf(&b, `<br/>%s`, muted(sub))
 	}
-	if rr.File != "" {
-		fmt.Fprintf(&b, "<b>Declared in:</b> <code>%s</code><br/>", esc(location(rr.File, rr.Line)))
+	b.WriteString(`</div>`)
+	return b.String()
+}
+
+func driftColour(action string) string {
+	switch action {
+	case "create":
+		return colCreate
+	case "delete", "replace":
+		return colDelete
+	default:
+		return colUpdate
 	}
-	fmt.Fprintf(&b, "<b>Change:</b> %s</p>", esc(rr.Action))
+}
+
+func driftGlyph(action string) string {
+	switch action {
+	case "create":
+		return "+"
+	case "delete":
+		return "−"
+	case "replace":
+		return "±"
+	default:
+		return "~"
+	}
+}
+
+// driftBody is the work item description for a drifted resource.
+func driftBody(rr report.ResourceReport, opts Options) string {
+	fill := driftColour(rr.Action)
+	var b strings.Builder
+
+	b.WriteString(header(driftGlyph(rr.Action), rr.Address, fill, whereLine(rr)))
+
+	// Badge row: what changed, and whether it is new — the tab's Change and
+	// First seen columns.
+	b.WriteString(`<div style="margin:0 0 12px 0">`)
+	b.WriteString(badge(titleCase(rr.Action), fill))
+	if rr.BaselineState == "new" {
+		b.WriteString("&nbsp;" + badge("New", colNew))
+	} else if age := firstSeen(rr.FirstSeen); age != "" {
+		b.WriteString("&nbsp;" + muted(age))
+	}
+	b.WriteString(`</div>`)
 
 	if len(rr.Attrs) > 0 {
-		b.WriteString("<table><tr><th>Attribute</th><th>From</th><th>To</th></tr>")
-		for _, a := range rr.Attrs {
-			fmt.Fprintf(&b, "<tr><td><code>%s</code></td><td><code>%s</code></td><td><code>%s</code></td></tr>",
-				esc(a.Path), esc(clip(render(a.Old), 200)), esc(clip(render(a.New), 200)))
-		}
-		b.WriteString("</table>")
+		b.WriteString(attrTable(rr.Attrs))
+	} else if s := rr.SummaryLine(); s != "" {
+		fmt.Fprintf(&b, `<p>%s</p>`, muted(s))
 	}
+
 	b.WriteString(footer(opts))
 	return b.String()
 }
 
-func deprBody(d report.Deprecation, opts Options) string {
+// attrTable is the tab's Attribute / From / To diff, old in red and new in
+// green.
+func attrTable(attrs []plan.AttrDiff) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "<p>%s</p>", esc(d.Summary))
+	fmt.Fprintf(&b, `<table style="border-collapse:collapse;width:100%%;font-size:12px">`)
+	fmt.Fprintf(&b, `<tr>`+
+		`<th style="text-align:left;padding:4px 10px;border-bottom:1px solid %[1]s;color:%[2]s">Attribute</th>`+
+		`<th style="text-align:left;padding:4px 10px;border-bottom:1px solid %[1]s;color:%[2]s">From</th>`+
+		`<th style="text-align:left;padding:4px 10px;border-bottom:1px solid %[1]s;color:%[2]s">To</th></tr>`,
+		colRule, colMuted)
+	for _, a := range attrs {
+		fmt.Fprintf(&b,
+			`<tr>`+
+				`<td style="padding:4px 10px;border-bottom:1px solid %[1]s">%[2]s</td>`+
+				`<td style="padding:4px 10px;border-bottom:1px solid %[1]s;color:%[3]s">%[4]s</td>`+
+				`<td style="padding:4px 10px;border-bottom:1px solid %[1]s;color:%[5]s">%[6]s</td></tr>`,
+			colRule, mono(a.Path),
+			colDelete, mono(clip(render(a.Old), 200)),
+			colCreate, mono(clip(render(a.New), 200)))
+	}
+	b.WriteString(`</table>`)
+	return b.String()
+}
+
+func deprBody(d report.Deprecation, opts Options) string {
+	fill := colUpdate
+	glyph := "⚠"
+	if strings.EqualFold(d.Severity, "error") {
+		fill, glyph = colDelete, "✖"
+	}
+
+	var b strings.Builder
+	b.WriteString(header(glyph, d.Summary, fill, ""))
+
+	b.WriteString(`<div style="margin:0 0 12px 0">`)
+	b.WriteString(badge(titleCase(orDefault(d.Severity, "warning")), fill))
+	if d.BaselineState == "new" {
+		b.WriteString("&nbsp;" + badge("New", colNew))
+	} else if age := firstSeen(d.FirstSeen); age != "" {
+		b.WriteString("&nbsp;" + muted(age))
+	}
+	b.WriteString(`</div>`)
+
 	if d.Detail != "" {
-		fmt.Fprintf(&b, "<p>%s</p>", esc(d.Detail))
+		fmt.Fprintf(&b, `<p>%s</p>`, esc(d.Detail))
 	}
 	if len(d.Sites) > 0 {
-		b.WriteString("<p><b>Reported at:</b></p><ul>")
+		fmt.Fprintf(&b, `<p style="margin-bottom:4px;color:%s;font-size:12px">Reported at</p><ul style="margin-top:0">`, colMuted)
 		for _, s := range d.Sites {
-			label := s.Address
-			if loc := location(s.File, s.Line); loc != "" {
-				if label == "" {
-					label = loc
-				} else {
-					label += " (" + loc + ")"
+			line := mono(orDefault(s.Address, location(s.File, s.Line)))
+			if s.Address != "" {
+				if loc := location(s.File, s.Line); loc != "" {
+					line += "&nbsp;&nbsp;" + muted(loc)
 				}
 			}
-			fmt.Fprintf(&b, "<li><code>%s</code></li>", esc(label))
+			fmt.Fprintf(&b, `<li>%s</li>`, line)
 		}
-		b.WriteString("</ul>")
+		b.WriteString(`</ul>`)
 	}
+
 	b.WriteString(footer(opts))
 	return b.String()
+}
+
+// whereLine locates the resource under the title. The tab shows the module or
+// the file, whichever it has; a work item shows both when it can, because it is
+// read on its own weeks later and the file path is where the reader goes to fix
+// the thing.
+func whereLine(rr report.ResourceReport) string {
+	parts := make([]string, 0, 2)
+	if rr.Module != "" {
+		parts = append(parts, rr.Module)
+	}
+	if loc := location(rr.File, rr.Line); loc != "" {
+		parts = append(parts, loc)
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+// firstSeen phrases a carried-over finding's age. Empty without a -baseline.
+func firstSeen(ts string) string {
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return ""
+	}
+	switch days := int(time.Since(t).Hours() / 24); {
+	case days <= 0:
+		return "first detected today"
+	case days == 1:
+		return "first detected yesterday"
+	default:
+		return fmt.Sprintf("first detected %s, %d days ago", t.Format("2006-01-02"), days)
+	}
 }
 
 // footer records where the item came from, so someone triaging it a month later
@@ -268,10 +417,29 @@ func footer(opts Options) string {
 	if opts.RunURL != "" {
 		bits = append(bits, fmt.Sprintf(`<a href="%s">view the run</a>`, esc(opts.RunURL)))
 	}
-	if len(bits) == 0 {
-		return "<p><i>Raised automatically by tf-snag.</i></p>"
+	tail := "Raised automatically by tf-snag"
+	if len(bits) > 0 {
+		tail += " — " + strings.Join(bits, " · ")
 	}
-	return "<p><i>Raised automatically by tf-snag — " + strings.Join(bits, " · ") + "</i></p>"
+	// The rule separates the provenance from the finding, as the tab separates
+	// its sections.
+	return fmt.Sprintf(
+		`<p style="margin-top:16px;padding-top:8px;border-top:1px solid %s;color:%s;font-size:11px">%s</p>`,
+		colRule, colMuted, tail)
+}
+
+func titleCase(s string) string {
+	if s == "" {
+		return ""
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func orDefault(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return s
 }
 
 func runSuffix(opts Options) string {
