@@ -75,8 +75,31 @@ function checkTask(dir) {
     if (typeof (task.version || {})[part] !== "number") problem(file, "version." + part + " is not a number");
   });
 
+  checkIcon(dir);
   checkInputs(file, task);
   checkExecution(file, dir, task);
+}
+
+// A task with no icon.png beside its task.json silently falls back to the
+// generic document-and-gears icon, which nothing else here would catch.
+function checkIcon(dir) {
+  var icon = path.join(ROOT, dir, "icon.png");
+  if (!fs.existsSync(icon)) {
+    problem(dir, "no icon.png - the task will show the default gears icon (run `npm run logo`)");
+    return;
+  }
+  // PNG header: 8-byte signature, then the IHDR length + type, then width and
+  // height as big-endian uint32s.
+  var head = fs.readFileSync(icon).subarray(0, 24);
+  if (head.length < 24 || head.readUInt32BE(12) !== 0x49484452) {
+    problem(dir, "icon.png is not a PNG");
+    return;
+  }
+  var width = head.readUInt32BE(16);
+  var height = head.readUInt32BE(20);
+  if (width !== 32 || height !== 32) {
+    problem(dir, "icon.png is " + width + "x" + height + ", but Azure DevOps asks for 32x32");
+  }
 }
 
 function checkInputs(file, task) {

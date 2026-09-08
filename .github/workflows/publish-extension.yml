@@ -96,9 +96,17 @@ jobs:
               echo "::error::variable ADO_ORG (the org to share the extension with) is not set" >&2
               exit 1
             fi
+            # --no-wait-validation: the upload is done by the time tfx starts
+            # polling, and that poll times out against the Marketplace often
+            # enough to mark a perfectly good publish as a failed run - which is
+            # worse than not knowing, because the next thing you do is publish
+            # again. Check it landed with:
+            #   npx tfx-cli extension isvalid --publisher wes-key \
+            #     --extension-id <id> --version <version> --token <PAT>
             npx tfx-cli extension publish "${args[@]}" \
               --auth-type pat --token "$TFX_PAT" \
-              --share-with "$ADO_ORG"
+              --share-with "$ADO_ORG" \
+              --no-wait-validation
           fi
 
       - uses: actions/upload-artifact@v4

@@ -39,20 +39,21 @@ underneath — the tracking is new, the drift is not.
 ## How it works
 
 ```
-tf-snag.yml step:
+tf-snag@0 task (tasks/tf-snag):
   tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
     -source "$(Build.SourcesDirectory)" [-baseline prev/tf-snag.sarif] \
     -format json -exit-code=false > tf-snag.json
-  echo "##vso[task.addattachment type=tf-snag.report;name=tf-snag;]tf-snag.json"
+  ##vso[task.addattachment type=tf-snag.report;name=tf-snag;]tf-snag.json
 
 this extension:
   build-results-tab  ->  BuildHttpClient.getAttachment(type="tf-snag.report")
                      ->  parse + render
 ```
 
-No custom pipeline task — it reads a run **attachment**, so any job that
-publishes one of type `tf-snag.report` lights up the tab. The JSON shape is
-owned by `internal/report/report.go`; `report.schema` is the contract version
+The tab reads a run **attachment**, not the task's output, so the two are not
+coupled: any job that publishes one of type `tf-snag.report` lights the tab up,
+including a plain `script:` step running the CLI itself. The JSON shape is owned
+by `internal/report/report.go`; `report.schema` is the contract version
 (`SCHEMA_SUPPORTED` in `tab/drift.js`, currently **2**).
 
 ## Build
@@ -62,9 +63,15 @@ Requires Node 18+ and Go (for the placeholder logo only).
 ```
 cd extension
 npm ci
-npm run logo         # writes images/logo.png (skip if you committed real art)
+npm run logo         # writes images/logo.png + each task's 32x32 icon.png
 npm run package      # -> dist/<publisher>.tf-snag-tab-<version>.vsix
 ```
+
+`npm run logo` regenerates the placeholder artwork — the Marketplace tile and
+the icon each task shows in the step list and the task picker. A task with no
+`icon.png` beside its `task.json` gets the generic document-and-gears icon
+instead; `tools/check-tasks.js` fails the build rather than let that ship. Skip
+the step if you have replaced any of them with real art.
 
 The tasks need no build of their own — they are plain Node 20 scripts with no
 dependencies. See [tasks/README.md](tasks/README.md#building) for how the shared
