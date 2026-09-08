@@ -80,10 +80,14 @@ function main() {
 // writeReport runs one format into a file. -exit-code=false keeps a finding from
 // failing the call, so a non-zero status here is a real tool error.
 function writeReport(cfg, file, args, env, what) {
+  var full = args.concat(["-exit-code=false"]);
   vso.log("writing " + what + " -> " + file);
-  var code = vso.execToFile(cfg.bin, args.concat(["-exit-code=false"]), file, { cwd: cfg.cwd, env: env });
+  // The exact command, so a failure here can be reproduced by hand rather than
+  // reasoned about from the inputs.
+  vso.log("  " + vso.describe(cfg.bin, full));
+  var code = vso.execToFile(cfg.bin, full, file, { cwd: cfg.cwd, env: env });
   if (code !== 0) {
-    throw new vso.TaskError("tf-snag exited " + code + " writing " + what + " - see the errors above");
+    throw new vso.TaskError("tf-snag exited " + code + " writing " + what + ": " + vso.describe(cfg.bin, full));
   }
 }
 
@@ -286,7 +290,9 @@ function resolveBinary() {
     return path.resolve(explicit);
   }
   var found = vso.which("tf-snag");
-  if (!found) {
+  if (found) {
+    vso.log("using tf-snag at " + found);
+  } else {
     throw new vso.TaskError(
       "tf-snag is not on PATH - add the \"Install tf-snag\" (tf-snag-install) task before this one, " +
       "or point toolPath at a binary"

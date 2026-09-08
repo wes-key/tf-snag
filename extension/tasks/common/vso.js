@@ -102,6 +102,15 @@ function command(name, properties, message) {
   process.stdout.write("##vso[" + name + (props ? " " + props : "") + "]" + escapeMessage(message) + "\n");
 }
 
+// describe renders a command for a log line or an error message. Arguments are
+// only ever paths, URLs and flags - credentials reach tf-snag through the
+// environment precisely so they cannot end up here.
+function describe(file, args) {
+  return [file].concat(args || []).map(function (part) {
+    return /[\s"]/.test(part) ? JSON.stringify(part) : part;
+  }).join(" ");
+}
+
 function log(message) {
   process.stdout.write(message + "\n");
 }
@@ -169,10 +178,12 @@ function exec(file, args, opts) {
     windowsHide: true,
   });
   if (result.error) {
-    throw new TaskError("could not run " + file + ": " + result.error.message);
+    // ENOENT / EACCES / ENOEXEC land here and the child produces no output at
+    // all, so the command has to be in the message or there is nothing to go on.
+    throw new TaskError("could not run " + describe(file, args) + ": " + result.error.message);
   }
   if (result.signal) {
-    throw new TaskError(file + " was killed by signal " + result.signal);
+    throw new TaskError(describe(file, args) + " was killed by signal " + result.signal);
   }
   return result.status;
 }
@@ -205,8 +216,13 @@ function which(tool) {
     for (var j = 0; j < exts.length; j++) {
       var candidate = path.join(dirs[i], tool + exts[j]);
       try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch (e) { /* not on this entry */ }
+        if (!fs.statSync(candidate).isFile()) continue;
+        // A shell would skip a file it cannot execute and keep looking; without
+        // this we would return it and fail on spawn with EACCES, which produces
+        // no child output and so says nothing about what went wrong.
+        if (process.platform !== "win32") fs.accessSync(candidate, fs.constants.X_OK);
+        return candidate;
+      } catch (e) { /* not on this entry, or not executable */ }
     }
   }
   return "";
@@ -222,7 +238,14 @@ function run(main) {
       if (!(err instanceof TaskError)) {
         log(err && err.stack ? err.stack : String(err));
       }
-      setResult("Failed", "tf-snag: " + (err && err.message ? err.message : String(err)));
+      var message = "tf-snag: " + (err && err.message ? err.message : String(err));
+      // Both, and in this order. The agent consumes ##vso[...] lines rather than
+      // echoing them, so task.complete alone puts the reason in the task's result
+      // - not in the log anyone is actually reading. logissue is what renders it
+      // inline as ##[error]. Reporting a failure with no visible cause is worse
+      // than the failure.
+      logIssue("error", message);
+      setResult("Failed", message);
       process.exitCode = 1;
     });
 }
@@ -233,6 +256,7 @@ module.exports = {
   boolInput: boolInput,
   command: command,
   debug: debug,
+  describe: describe,
   endGroup: endGroup,
   exec: exec,
   execToFile: execToFile,
