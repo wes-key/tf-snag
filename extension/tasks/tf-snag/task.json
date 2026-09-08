@@ -1,0 +1,314 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/azure-pipelines-task-lib/master/tasks.schema.json",
+  "id": "0f5c8ba1-5bdc-4f9f-8cbd-ddd74c0ee417",
+  "name": "tf-snag",
+  "friendlyName": "tf-snag drift check",
+  "description": "Runs tf-snag over a Terraform plan and publishes the tf-snag tab attachment, the provenance baseline, work items and a Teams card.",
+  "helpMarkDown": "[Documentation](https://github.com/wes-key/tf-snag/blob/main/extension/tasks/README.md). Needs `tf-snag` on PATH — put the **Install tf-snag** task before this one.",
+  "category": "Utility",
+  "author": "wes-key",
+  "version": { "Major": 0, "Minor": 6, "Patch": 0 },
+  "visibility": ["Build", "Release"],
+  "runsOn": ["Agent", "DeploymentGroup"],
+  "minimumAgentVersion": "3.232.1",
+  "instanceNameFormat": "tf-snag drift check",
+  "groups": [
+    { "name": "provenance", "displayName": "Provenance", "isExpanded": false },
+    { "name": "publish", "displayName": "What to publish", "isExpanded": false },
+    { "name": "workItems", "displayName": "Work items", "isExpanded": false },
+    { "name": "teams", "displayName": "Microsoft Teams", "isExpanded": false },
+    { "name": "advanced", "displayName": "Advanced", "isExpanded": false }
+  ],
+  "inputs": [
+    {
+      "name": "checks",
+      "type": "pickList",
+      "label": "Checks",
+      "defaultValue": "all",
+      "required": true,
+      "options": {
+        "all": "Drift and deprecations",
+        "drift": "Drift only",
+        "deprecations": "Deprecations only"
+      },
+      "helpMarkDown": "Deprecations are read from the `terraform plan -json` log, so `all` and `deprecations` need **Plan log** as well as **Plan**."
+    },
+    {
+      "name": "plan",
+      "type": "filePath",
+      "label": "Plan (terraform show -json output)",
+      "defaultValue": "plan.json",
+      "required": false,
+      "visibleRule": "checks = all || checks = drift",
+      "helpMarkDown": "Written by `terraform show -json tfplan > plan.json`. Relative paths resolve against **Working directory**."
+    },
+    {
+      "name": "planLog",
+      "type": "filePath",
+      "label": "Plan log (terraform plan -json output)",
+      "defaultValue": "plan.jsonl",
+      "required": false,
+      "visibleRule": "checks = all || checks = deprecations",
+      "helpMarkDown": "The NDJSON log from `terraform plan -json`, which is where the deprecation warnings are."
+    },
+    {
+      "name": "planLogDir",
+      "type": "string",
+      "label": "Directory terraform plan ran in",
+      "defaultValue": "",
+      "required": false,
+      "visibleRule": "checks = all || checks = deprecations",
+      "helpMarkDown": "Repo-relative, e.g. `terraform` when the plan ran with `-chdir=terraform`. Prepended to the file locations in the plan log so their links resolve from the repo root."
+    },
+    {
+      "name": "source",
+      "type": "filePath",
+      "label": "Terraform source directory",
+      "defaultValue": "$(Build.SourcesDirectory)",
+      "required": false,
+      "helpMarkDown": "Used to link each finding to the `.tf` line declaring the resource, and to pick up inline `# tf-snag:ignore` comments."
+    },
+    {
+      "name": "ignoreFile",
+      "type": "filePath",
+      "label": "Ignore file",
+      "defaultValue": "",
+      "required": false,
+      "helpMarkDown": "Leave empty to auto-discover `.tf-snag-ignore.yml` in the working directory or the source directory."
+    },
+    {
+      "name": "workingDirectory",
+      "type": "filePath",
+      "label": "Working directory",
+      "defaultValue": "$(System.DefaultWorkingDirectory)",
+      "required": false,
+      "helpMarkDown": "Where tf-snag runs, and what relative paths above resolve against."
+    },
+
+    {
+      "name": "baseline",
+      "type": "filePath",
+      "label": "Baseline (previous run's tf-snag.sarif)",
+      "defaultValue": "$(Pipeline.Workspace)/prev/tf-snag.sarif",
+      "required": false,
+      "groupName": "provenance",
+      "helpMarkDown": "Stamps each finding new / updated with a first-seen time, and is what `Post to Teams: new` and `Raise: new` gate on. Download it from the previous run with **DownloadPipelineArtifact**; a missing file is fine and means every finding reads as new."
+    },
+    {
+      "name": "runUrl",
+      "type": "string",
+      "label": "Run URL",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "provenance",
+      "helpMarkDown": "Recorded against findings first seen in this run, so later runs can link a long-standing finding back to the run that caught it. Defaults to this run's results page."
+    },
+    {
+      "name": "outputDirectory",
+      "type": "filePath",
+      "label": "Output directory",
+      "defaultValue": "$(Build.ArtifactStagingDirectory)",
+      "required": false,
+      "groupName": "provenance",
+      "helpMarkDown": "Where `tf-snag.json`, `tf-snag.sarif` and `tf-snag.md` are written."
+    },
+    {
+      "name": "artifactName",
+      "type": "string",
+      "label": "Publish the output directory as artifact",
+      "defaultValue": "tf-snag",
+      "required": false,
+      "groupName": "provenance",
+      "helpMarkDown": "The artifact the next run downloads for its baseline. Set empty to publish nothing."
+    },
+
+    {
+      "name": "publishAttachment",
+      "type": "boolean",
+      "label": "tf-snag tab",
+      "defaultValue": true,
+      "required": false,
+      "groupName": "publish",
+      "helpMarkDown": "Attach the JSON report to the run, which is what this extension's **tf-snag** tab renders."
+    },
+    {
+      "name": "publishSummary",
+      "type": "boolean",
+      "label": "Run summary section",
+      "defaultValue": false,
+      "required": false,
+      "groupName": "publish",
+      "helpMarkDown": "Add the markdown report to the run's **Summary** tab. Needs nothing installed."
+    },
+    {
+      "name": "publishScansTab",
+      "type": "boolean",
+      "label": "Scans tab",
+      "defaultValue": false,
+      "required": false,
+      "groupName": "publish",
+      "helpMarkDown": "Publish the SARIF as a `CodeAnalysisLogs` artifact. Needs the *SARIF SAST Scans Tab* extension installed in the organisation."
+    },
+
+    {
+      "name": "workItems",
+      "type": "pickList",
+      "label": "Raise work items",
+      "defaultValue": "off",
+      "required": false,
+      "groupName": "workItems",
+      "options": {
+        "off": "Off",
+        "dry-run": "Dry run — report what would change, write nothing",
+        "on": "On"
+      },
+      "helpMarkDown": "One work item per finding, tagged so later runs link to it rather than raising a duplicate. Start on **dry run**: it exercises auth, the dedup query and the permission pre-check without writing anything."
+    },
+    {
+      "name": "adoUrl",
+      "type": "string",
+      "label": "Project URL",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "workItems",
+      "visibleRule": "workItems != off",
+      "helpMarkDown": "`https://dev.azure.com/org/project`. Defaults to the project this run is in."
+    },
+    {
+      "name": "adoToken",
+      "type": "string",
+      "label": "Token",
+      "defaultValue": "$(System.AccessToken)",
+      "required": false,
+      "groupName": "workItems",
+      "visibleRule": "workItems != off",
+      "helpMarkDown": "Needs **Work Items (Read & Write)**. The default is the pipeline's own identity, which needs the *<Project> Build Service* account to have *Edit work items in this node* on the area path; supply a PAT variable instead if you would rather not grant that."
+    },
+    {
+      "name": "adoType",
+      "type": "string",
+      "label": "Work item type",
+      "defaultValue": "Task",
+      "required": false,
+      "groupName": "workItems",
+      "visibleRule": "workItems != off"
+    },
+    {
+      "name": "adoArea",
+      "type": "string",
+      "label": "Area path",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "workItems",
+      "visibleRule": "workItems != off",
+      "helpMarkDown": "Defaults to the project root."
+    },
+    {
+      "name": "adoRaise",
+      "type": "pickList",
+      "label": "Raise for",
+      "defaultValue": "new",
+      "required": false,
+      "groupName": "workItems",
+      "visibleRule": "workItems != off",
+      "options": {
+        "new": "Findings absent from the baseline",
+        "findings": "Every un-suppressed finding"
+      },
+      "helpMarkDown": "`new` keeps adopting this against a drifty estate from opening fifty items on day one. Either way, a finding that already has an item is linked to it."
+    },
+    {
+      "name": "adoClose",
+      "type": "boolean",
+      "label": "Close items whose finding has gone",
+      "defaultValue": true,
+      "required": false,
+      "groupName": "workItems",
+      "visibleRule": "workItems = on"
+    },
+    {
+      "name": "adoClosedState",
+      "type": "string",
+      "label": "Closed state",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "workItems",
+      "visibleRule": "workItems = on",
+      "helpMarkDown": "Defaults to whichever state the work item type files under **Completed** — `Closed` on Agile, `Done` on Scrum and Basic."
+    },
+
+    {
+      "name": "teamsWebhook",
+      "type": "string",
+      "label": "Teams webhook URL",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "teams",
+      "helpMarkDown": "A Power Automate **Workflows** trigger URL (the replacement for the retired Office 365 connectors). Treat it as a credential and pass it from a secret variable. Leave empty, or set `TF_SNAG_TEAMS_WEBHOOK` in the step's `env`, to post nothing."
+    },
+    {
+      "name": "teamsNotify",
+      "type": "pickList",
+      "label": "Post to Teams",
+      "defaultValue": "new",
+      "required": false,
+      "groupName": "teams",
+      "options": {
+        "new": "Only when a finding is absent from the baseline",
+        "findings": "Whenever there is an un-suppressed finding",
+        "always": "Every run, clean or not"
+      },
+      "helpMarkDown": "`new` is right for a schedule — it stops a daily run re-announcing the same drift. Use `always` for the first run, to prove the webhook works."
+    },
+    {
+      "name": "teamsContext",
+      "type": "string",
+      "label": "Card context line",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "teams",
+      "helpMarkDown": "Subtle line under the card headline. Defaults to pipeline · branch · run number."
+    },
+    {
+      "name": "failOnTeamsError",
+      "type": "boolean",
+      "label": "Fail the task if posting fails",
+      "defaultValue": true,
+      "required": false,
+      "groupName": "teams",
+      "helpMarkDown": "A notification you believe is going out but is not is worse than a loud failure."
+    },
+
+    {
+      "name": "onDrift",
+      "type": "pickList",
+      "label": "When drift or a deprecation is found",
+      "defaultValue": "warning",
+      "required": false,
+      "groupName": "advanced",
+      "options": {
+        "warning": "Succeeded with issues",
+        "failure": "Fail the task",
+        "none": "Succeed"
+      },
+      "helpMarkDown": "A tool or plan error always fails the task, whichever of these is chosen."
+    },
+    {
+      "name": "toolPath",
+      "type": "filePath",
+      "label": "tf-snag binary",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "advanced",
+      "helpMarkDown": "Leave empty to use the `tf-snag` the **Install tf-snag** task put on PATH."
+    }
+  ],
+  "outputVariables": [
+    { "name": "driftDetected", "description": "true when drift or a deprecation was reported." },
+    { "name": "reportJson", "description": "Path of the JSON report." },
+    { "name": "reportSarif", "description": "Path of the SARIF report — the next run's baseline." }
+  ],
+  "execution": {
+    "Node20_1": { "target": "report.js" }
+  }
+}
