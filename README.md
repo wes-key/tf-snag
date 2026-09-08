@@ -422,8 +422,28 @@ it never contaminates `-format json`/`sarif` on stdout.
 
 ## Azure DevOps
 
-The scheduled job in `../tf-drift-test-resources/pipelines/tf-snag.yml` plans
-against real infrastructure and emits all reports. Capture the `-json` plan log
+The [`extension/`](extension/) ships two pipeline tasks alongside the run tab, so
+a drift pipeline does not have to inline any of this:
+
+```yaml
+- task: tf-snag-install@0            # binary from a GitHub release, onto PATH
+  inputs:
+    githubToken: $(GITHUB_TOKEN)
+
+- task: tf-snag@0                    # plan -> every surface below
+  inputs:
+    planLogDir: terraform            # `terraform -chdir=terraform plan`
+    teamsWebhook: $(teamsWebhook)    # secret variable; absent = post nothing
+    workItems: dry-run
+```
+
+That writes the reports into `$(Build.ArtifactStagingDirectory)`, attaches the
+JSON to the run, publishes the directory as the `tf-snag` artifact for the next
+run to use as its `-baseline`, raises work items and posts the card. The full
+scheduled pipeline, and every input, is in
+[`extension/tasks/README.md`](extension/tasks/README.md).
+
+Without the extension it is all still just the CLI. Capture the `-json` plan log
 alongside the plan file to feed the deprecation check:
 
 ```yaml
@@ -432,7 +452,7 @@ alongside the plan file to feed the deprecation check:
     terraform -chdir=terraform show -json tfplan > plan.json
     ./tf-snag -plan plan.json -format json -exit-code=false > tf-snag.json
     # -plan-log-dir terraform: plan ran with -chdir=terraform, so its diagnostic
-    # paths are relative to terraform/ — prepend it for working links.
+    # paths are relative to terraform/ - prepend it for working links.
     ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
       -format markdown -exit-code=false > tf-snag.md
     ./tf-snag -check all -plan plan.json -plan-log plan.jsonl -plan-log-dir terraform \
@@ -450,12 +470,13 @@ alongside the plan file to feed the deprecation check:
 
 Where each lands on the run page:
 
-| Surface | Mechanism | Needs |
-|---|---|---|
-| dedicated **tf-snag** tab | `json` attachment + [`extension/`](extension/) | the extension published & installed — see `extension/README.md` |
-| **Scans** tab | `sarif` + `CodeAnalysisLogs` artifact | the "SARIF SAST Scans Tab" extension installed in the org |
-| **Summary** tab section | `markdown` + `task.uploadsummary` | nothing (built in) |
-| **Boards** | `-ado-url`, one work item per finding | a token with Work Items (Read & Write) — see [Work items](#work-items) |
+| Surface | Mechanism | `tf-snag@0` input | Needs |
+|---|---|---|---|
+| dedicated **tf-snag** tab | `json` attachment + [`extension/`](extension/) | `publishAttachment` (on) | the extension published & installed — see `extension/README.md` |
+| **Scans** tab | `sarif` + `CodeAnalysisLogs` artifact | `publishScansTab` | the "SARIF SAST Scans Tab" extension installed in the org |
+| **Summary** tab section | `markdown` + `task.uploadsummary` | `publishSummary` | nothing (built in) |
+| **Boards** | `-ado-url`, one work item per finding | `workItems` | a token with Work Items (Read & Write) — see [Work items](#work-items) |
+| **Teams** | Adaptive Card to a channel webhook | `teamsWebhook` | a Power Automate Workflows trigger — see [Microsoft Teams](#microsoft-teams) |
 
 The tf-snag tab (schema 2) splits findings across a **Drift** / **Deprecations** /
 **Pending changes** pivot, each tab carrying its count, its own collapsed
@@ -478,9 +499,10 @@ by tests. Deprecation check (`-check deprecations`, from the `terraform plan
 Summary, the tf-snag run tab (`extension/`), Teams notifications and Azure DevOps
 work items are live.
 
-The run tab shows the work item reference and the "no longer ignored" badge, so
-it needs republishing (manifest `0.5.0`) alongside a release carrying the work
-item feature.
+The extension (manifest `0.6.0`) needs republishing alongside a release carrying
+the work item feature: the run tab shows the work item reference and the "no
+longer ignored" badge, and the `tf-snag-install` / `tf-snag` pipeline tasks are
+new.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
 `main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,

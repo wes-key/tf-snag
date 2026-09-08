@@ -2,9 +2,9 @@
   "manifestVersion": 1,
   "id": "tf-snag-tab",
   "publisher": "wes-key",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "name": "tf-snag drift report",
-  "description": "Adds a \"tf-snag\" tab to the pipeline run showing drift and deprecation warnings reported by the tf-snag CLI, with ignore-rule and baseline (first-seen) awareness.",
+  "description": "Pipeline tasks that install and run the tf-snag CLI, plus a \"tf-snag\" run tab showing its drift and deprecation findings with ignore-rule and baseline (first-seen) awareness.",
   "public": false,
   "categories": ["Azure Pipelines"],
   "tags": ["terraform", "drift", "infrastructure", "iac"],
@@ -21,7 +21,11 @@
   "files": [
     { "path": "tab", "addressable": true },
     { "path": "images", "addressable": true },
-    { "path": "node_modules/vss-web-extension-sdk/lib", "addressable": true, "packagePath": "lib" }
+    { "path": "node_modules/vss-web-extension-sdk/lib", "addressable": true, "packagePath": "lib" },
+    { "path": "tasks/tf-snag-install" },
+    { "path": "tasks/tf-snag" },
+    { "path": "tasks/common/vso.js", "packagePath": "tasks/tf-snag-install/vso.js" },
+    { "path": "tasks/common/vso.js", "packagePath": "tasks/tf-snag/vso.js" }
   ],
   "contributions": [
     {
@@ -31,6 +35,22 @@
       "properties": {
         "name": "tf-snag",
         "uri": "tab/drift.html"
+      }
+    },
+    {
+      "id": "tf-snag-install-task",
+      "type": "ms.vss-distributed-task.task",
+      "targets": ["ms.vss-distributed-task.tasks"],
+      "properties": {
+        "name": "tasks/tf-snag-install"
+      }
+    },
+    {
+      "id": "tf-snag-task",
+      "type": "ms.vss-distributed-task.task",
+      "targets": ["ms.vss-distributed-task.tasks"],
+      "properties": {
+        "name": "tasks/tf-snag"
       }
     }
   ]
