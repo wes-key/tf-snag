@@ -169,11 +169,11 @@ function readInputs() {
   cfg.drift = cfg.checks === "drift" || cfg.checks === "all";
   cfg.deprecations = cfg.checks === "deprecations" || cfg.checks === "all";
 
-  cfg.plan = cfg.drift ? resolve(cfg.cwd, vso.input("plan") || "plan.json") : "";
-  cfg.planLog = cfg.deprecations ? resolve(cfg.cwd, vso.input("planLog") || "plan.jsonl") : "";
+  cfg.plan = cfg.drift ? resolve(cfg.cwd, vso.fileInput("plan") || "plan.json") : "";
+  cfg.planLog = cfg.deprecations ? resolve(cfg.cwd, vso.fileInput("planLog") || "plan.jsonl") : "";
   cfg.planLogDir = vso.input("planLogDir");
   cfg.source = vso.input("source") || vso.variable("Build.SourcesDirectory");
-  cfg.ignoreFile = vso.input("ignoreFile");
+  cfg.ignoreFile = vso.fileInput("ignoreFile");
   cfg.runURL = vso.input("runUrl") || defaultRunURL();
 
   // These are read from stdin when the flag is absent, which on an agent means
@@ -189,7 +189,7 @@ function readInputs() {
   }
 
   cfg.baseline = "";
-  var baseline = vso.input("baseline");
+  var baseline = vso.fileInput("baseline");
   if (baseline) {
     baseline = resolve(cfg.cwd, baseline);
     if (fs.existsSync(baseline)) {
@@ -282,7 +282,7 @@ function execEnv(cfg) {
 }
 
 function resolveBinary() {
-  var explicit = vso.input("toolPath");
+  var explicit = vso.fileInput("toolPath");
   if (explicit) {
     if (!fs.existsSync(explicit)) {
       throw new vso.TaskError("no tf-snag binary at " + explicit);

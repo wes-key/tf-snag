@@ -240,6 +240,21 @@ as the tab, and the installer wears a download glyph.
 
 `npm run package` builds the `.vsix`; see [../README.md](../README.md#build).
 
+### A blank `filePath` input is not blank
+
+Azure DevOps resolves a `filePath` input against the default working directory,
+so one left empty reaches the task as **the repo root** — not `""`. Code that
+only tests for empty then treats the source directory as a plan file, an ignore
+file, or a binary to execute; `toolPath` blank once meant "execute
+`/home/vsts/work/1/s`", which fails as `spawnSync … EACCES` with no output from
+the child to explain it.
+
+Read every file-valued input with `vso.fileInput()`, which treats a directory as
+"not set" and passes a non-existent path through so the error names it. This is
+also the one thing a local run cannot reproduce — the agent materialises those
+defaults, a shell does not — so `tools/check-tasks.js` fails any `filePath` input
+with no default that is read with plain `input()`.
+
 `node tools/check-tasks.js` (run by CI on every PR) lints the pair against the
 manifest: GUIDs, name/folder agreement, picklist defaults, `visibleRule` targets,
 that every relative `require()` resolves in the package, and that each task has a

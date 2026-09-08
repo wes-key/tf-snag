@@ -77,7 +77,28 @@ function checkTask(dir) {
 
   checkIcon(dir);
   checkInputs(file, task);
+  checkBlankFilePaths(file, dir, task);
   checkExecution(file, dir, task);
+}
+
+// A filePath input left blank does not reach the task as "": Azure DevOps
+// resolves it against the default working directory, so the task is handed the
+// repo root. Reading one with plain input() means an unset path silently becomes
+// the source directory - which is how `toolPath` once turned into "execute the
+// repo root". vso.fileInput() is the guard, so require it.
+function checkBlankFilePaths(file, dir, task) {
+  var source = fs.readdirSync(path.join(ROOT, dir))
+    .filter(function (name) { return /\.js$/.test(name); })
+    .map(function (name) { return fs.readFileSync(path.join(ROOT, dir, name), "utf8"); })
+    .join("\n");
+
+  (task.inputs || []).forEach(function (input) {
+    if (input.type !== "filePath" || input.defaultValue) return;
+    if (!new RegExp('fileInput\\(\\s*"' + input.name + '"').test(source)) {
+      problem(file, input.name + " is a filePath with no default, so it arrives as the repo root when blank - " +
+        "read it with vso.fileInput(), or give it a default");
+    }
+  });
 }
 
 // A task with no icon.png beside its task.json silently falls back to the

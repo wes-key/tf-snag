@@ -41,6 +41,25 @@ function input(name, opts) {
   return value;
 }
 
+// fileInput is input() for a task.json "filePath" input that names a FILE.
+//
+// An empty filePath input does not arrive empty. Azure DevOps resolves the value
+// against the default working directory, so a filePath left blank reaches the
+// task as the repo root - and code that only checks for "" then treats the
+// source directory as a plan, an ignore file, or a binary to execute. A
+// directory is never the answer for these, so it means "not set".
+//
+// Left alone deliberately: a path that does not exist is passed through, so the
+// resulting error names what was asked for rather than silently ignoring it.
+function fileInput(name) {
+  var value = input(name);
+  if (!value) return "";
+  try {
+    if (fs.statSync(value).isDirectory()) return "";
+  } catch (e) { /* not there - let whatever needs it say so */ }
+  return value;
+}
+
 function boolInput(name, fallback) {
   var value = input(name).toLowerCase();
   if (!value) return !!fallback;
@@ -260,6 +279,7 @@ module.exports = {
   endGroup: endGroup,
   exec: exec,
   execToFile: execToFile,
+  fileInput: fileInput,
   group: group,
   input: input,
   isSet: isSet,
