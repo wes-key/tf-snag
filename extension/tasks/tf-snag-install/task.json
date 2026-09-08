@@ -1,0 +1,57 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/azure-pipelines-task-lib/master/tasks.schema.json",
+  "id": "cb25ab71-7da9-43cc-b8ce-941ff0848021",
+  "name": "tf-snag-install",
+  "friendlyName": "Install tf-snag",
+  "description": "Downloads the tf-snag CLI from a GitHub release and puts it on PATH for the rest of the job.",
+  "helpMarkDown": "[Documentation](https://github.com/wes-key/tf-snag/blob/main/extension/tasks/README.md). Releases are private, so `githubToken` needs read-only **Contents** on the repository.",
+  "category": "Tool",
+  "author": "wes-key",
+  "version": { "Major": 0, "Minor": 6, "Patch": 0 },
+  "visibility": ["Build", "Release"],
+  "runsOn": ["Agent", "DeploymentGroup"],
+  "minimumAgentVersion": "3.232.1",
+  "instanceNameFormat": "Install tf-snag $(version)",
+  "inputs": [
+    {
+      "name": "version",
+      "type": "string",
+      "label": "Version",
+      "defaultValue": "latest",
+      "required": false,
+      "helpMarkDown": "A release tag (`v0.1.2`) to pin, or `latest`. Pinning is worth it once a pipeline is in use: a report format change should be something you adopt, not something that lands overnight."
+    },
+    {
+      "name": "includePrerelease",
+      "type": "boolean",
+      "label": "Include pre-releases",
+      "defaultValue": true,
+      "required": false,
+      "visibleRule": "version = latest",
+      "helpMarkDown": "On by default because tf-snag has not cut a stable release yet: `latest` takes the newest tag of any kind, including `-dev.N` / `-rc.N`. Untick it to take the newest stable release instead."
+    },
+    {
+      "name": "repository",
+      "type": "string",
+      "label": "GitHub repository",
+      "defaultValue": "wes-key/tf-snag",
+      "required": false,
+      "helpMarkDown": "`owner/repo` to download the release from. Change this only for a fork."
+    },
+    {
+      "name": "githubToken",
+      "type": "string",
+      "label": "GitHub token",
+      "defaultValue": "",
+      "required": false,
+      "helpMarkDown": "A GitHub token with read-only **Contents** on the repository, e.g. `$(GITHUB_TOKEN)` from a secret pipeline variable. Required while the repository is private."
+    }
+  ],
+  "outputVariables": [
+    { "name": "tfSnagPath", "description": "Full path of the downloaded tf-snag binary." },
+    { "name": "tfSnagVersion", "description": "Release tag that was installed, e.g. v0.1.2." }
+  ],
+  "execution": {
+    "Node20_1": { "target": "install.js" }
+  }
+}

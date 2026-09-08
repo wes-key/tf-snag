@@ -1,5 +1,5 @@
-# Publishes the Azure DevOps "Drift" tab extension (extension/) to the Visual
-# Studio Marketplace.
+# Publishes the Azure DevOps tf-snag extension (extension/) to the Visual Studio
+# Marketplace: the run tab and the tf-snag-install / tf-snag pipeline tasks.
 #
 # The extension is PRIVATE (vss-extension.json "public": false): it never shows
 # in Marketplace search and is only installable by orgs it is shared with, which
@@ -17,6 +17,12 @@
 # Version published is 0.<minor>.<run_number> (minor taken from the manifest), so
 # re-runs always publish a higher version - the Marketplace rejects re-publishing
 # an existing one. Bump the minor in vss-extension.json for a deliberate step.
+#
+# The tasks are stamped with that same version by tools/stamp-tasks.js before
+# packaging: an agent caches a task by id + version, so it keeps running the old
+# copy until task.json says otherwise. On the dev channel that script also gives
+# the tasks their own ids and a -dev name suffix, since task ids are global to an
+# organisation and the two channels have to be installable side by side.
 
 name: Publish ADO extension
 
@@ -61,6 +67,9 @@ jobs:
         run: |
           minor=$(node -p "require('./vss-extension.json').version.split('.')[1]")
           echo "version=0.${minor}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp task versions (${{ inputs.channel }})
+        run: node tools/stamp-tasks.js --version "${{ steps.ver.outputs.version }}" --channel "${{ inputs.channel }}"
 
       - name: "${{ inputs.dry_run && 'Package (dry run)' || 'Package and publish' }} — ${{ inputs.channel }} v${{ steps.ver.outputs.version }}"
         env:

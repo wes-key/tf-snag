@@ -5,6 +5,7 @@
   "description": "Azure DevOps build-results tab that renders the tf-snag drift report.",
   "scripts": {
     "logo": "go run ./tools/genlogo/main.go",
+    "stamp": "node tools/stamp-tasks.js",
     "package": "tfx extension create --manifest-globs vss-extension.json --output-path dist",
     "package:dev": "tfx extension create --manifest-globs vss-extension.json --overrides-file configs/dev.json --output-path dist",
     "publish": "tfx extension publish --manifest-globs vss-extension.json",

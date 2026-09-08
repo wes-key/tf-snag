@@ -1,8 +1,14 @@
-# tf-snag — Azure DevOps run tab
+# tf-snag — Azure DevOps extension
 
 Adds a **tf-snag** tab to the pipeline run summary (next to Tests, Code Coverage,
 Trivy, Mend, …) that renders the report produced by the
-[`tf-snag`](../README.md) CLI.
+[`tf-snag`](../README.md) CLI, and the two pipeline tasks that produce it:
+
+| Contribution | |
+|---|---|
+| **tf-snag** run tab | the drift / deprecations / pending-changes pivot below |
+| **`tf-snag-install`** task | downloads the CLI from a GitHub release onto `PATH` |
+| **`tf-snag`** task | runs it and publishes the tab attachment, the baseline, work items and a Teams card — see [tasks/README.md](tasks/README.md) |
 
 A run-level status banner sits at the top, and the findings are split across a
 pivot of three tabs, each labelled with its count:
@@ -60,6 +66,11 @@ npm run logo         # writes images/logo.png (skip if you committed real art)
 npm run package      # -> dist/<publisher>.tf-snag-tab-<version>.vsix
 ```
 
+The tasks need no build of their own — they are plain Node 20 scripts with no
+dependencies. See [tasks/README.md](tasks/README.md#building) for how the shared
+helper reaches both task folders, and for the version/channel stamping the
+publish workflow does.
+
 ## Publish (private to this org)
 
 The extension is **private** (`"public": false` in `vss-extension.json`): it is
@@ -81,8 +92,9 @@ explicitly shared with.
 (`.github/workflows/publish-extension.yml`) from the Actions tab:
 
 - `channel: prod` → the `tf-snag-tab` id teams install; `channel: dev` →
-  a separate `tf-snag-tab-dev` id (via `configs/dev.json`) so you can iterate
-  without bumping the version teams have installed.
+  a separate `tf-snag-tab-dev` id (via `configs/dev.json`), with its own task ids
+  and `-dev` task names (via `tools/stamp-tasks.js`), so you can iterate without
+  bumping the version teams have installed.
 - `dry_run: true` → builds the `.vsix` and uploads it as a run artifact without
   publishing.
 - Version published is `0.<minor>.<run_number>` (minor from the manifest); bump
@@ -111,9 +123,22 @@ publishing.
 needs a real build attachment and the `VSS` host). For quick DOM/CSS work, open
 `tab/drift.html` with a stubbed `VSS` object and a sample `tf-snag.json`.
 
+The tasks are testable off an agent: they read their inputs from `INPUT_<NAME>`
+environment variables and write logging commands to stdout, so
+
+```
+INPUT_PLAN=testdata/plan-drift.json INPUT_CHECKS=drift \
+INPUT_TOOLPATH=./tf-snag INPUT_OUTPUTDIRECTORY=/tmp/out \
+node tasks/tf-snag/report.js
+```
+
+runs the real thing and prints the `##vso[…]` commands an agent would act on.
+`tasks/tf-snag/report.js` needs `vso.js` beside it, which the package build does
+— copy `tasks/common/vso.js` in first.
+
 ## Verifying end to end
 
-1. Run **`tf-snag.yml`**. Confirm the drift step logs
+1. Run **`tf-snag.yml`**. Confirm the **tf-snag drift check** step logs
    `##vso[task.addattachment …type=tf-snag.report…]`.
 2. Open the run → **tf-snag** tab.
    - findings present → amber banner, and the **Drift** / **Deprecations** /

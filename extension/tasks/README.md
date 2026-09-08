@@ -1,0 +1,264 @@
+# tf-snag pipeline tasks
+
+Two Azure DevOps tasks, shipped by the same extension as the
+[run tab](../README.md):
+
+| Task | Does |
+|---|---|
+| **`tf-snag-install`** — *Install tf-snag* | downloads the CLI from a GitHub release and puts it on `PATH` for the rest of the job |
+| **`tf-snag`** — *tf-snag drift check* | runs it over a plan and publishes every surface: the tab attachment, the provenance baseline, a summary, work items, a Teams card |
+
+Together they replace the ~150 lines of inline bash a drift pipeline used to
+carry. The whole check is now:
+
+```yaml
+- task: tf-snag-install@0
+  inputs:
+    githubToken: $(GITHUB_TOKEN)
+
+- task: tf-snag@0
+  inputs:
+    planLogDir: terraform
+```
+
+## The full pipeline
+
+A scheduled drift check against real infrastructure, with provenance, work items
+and a Teams card — the shape
+`../tf-snag-test-resources/pipelines/tf-snag.yml` uses:
+
+```yaml
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 6 * * 1-5"
+    displayName: "Weekday 06:00 UTC drift check"
+    branches: { include: [main] }
+    always: true
+
+pool:
+  vmImage: Ubuntu-latest
+
+parameters:
+  # Parameters rather than variables so they appear as dropdowns when queuing a
+  # run - a variable declared in YAML is fixed at compile time.
+  - name: teamsNotify
+    displayName: 'Post to Teams'
+    type: string
+    default: new
+    values: [new, findings, always]
+  - name: adoWorkItems
+    displayName: 'Raise work items'
+    type: string
+    default: dry-run
+    values: [dry-run, 'on', 'off']
+
+steps:
+  - checkout: self
+    clean: true
+
+  - task: TerraformInstaller@1
+    inputs:
+      terraformVersion: latest
+
+  - task: tf-snag-install@0
+    displayName: 'Install tf-snag'
+    inputs:
+      githubToken: $(GITHUB_TOKEN)      # read-only Contents on wes-key/tf-snag
+
+  # The previous run's reports. tf-snag.sarif from it is the default baseline,
+  # which is what stamps each finding new / updated with a first-seen time.
+  - task: DownloadPipelineArtifact@2
+    displayName: 'Fetch the previous run reports'
+    continueOnError: true               # the first run on a branch has none
+    inputs:
+      source: specific
+      project: $(System.TeamProjectId)
+      pipeline: $(System.DefinitionId)
+      runVersion: latestFromBranch      # newest *completed* run = the previous one
+      runBranch: $(Build.SourceBranch)
+      allowPartiallySucceededBuilds: true   # drift makes a run "SucceededWithIssues"
+      artifact: tf-snag
+      path: $(Pipeline.Workspace)/prev
+
+  - task: AzureCLI@2
+    displayName: 'Terraform init + plan'
+    inputs:
+      scriptType: bash
+      scriptLocation: inlineScript
+      azureSubscription: tf-snag-sc
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -eu -o pipefail
+        az account set --subscription tf-snag
+        export ARM_CLIENT_ID=$servicePrincipalId
+        export ARM_CLIENT_SECRET=$servicePrincipalKey
+        export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+        export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+        # script(1) gives Terraform a pseudo-tty, so it colours the log.
+        script -qec "make plan" /dev/null
+
+  - task: tf-snag@0
+    displayName: 'Drift check'
+    inputs:
+      # `make plan` runs `terraform -chdir=terraform`, so the plan log's file
+      # locations are relative to terraform/ - prepend it for working links.
+      planLogDir: terraform
+      teamsWebhook: $(teamsWebhook)     # secret variable; absent = post nothing
+      teamsNotify: ${{ parameters.teamsNotify }}
+      workItems: ${{ parameters.adoWorkItems }}
+```
+
+Nothing else is needed: the task writes `tf-snag.json` / `tf-snag.sarif` into
+`$(Build.ArtifactStagingDirectory)`, attaches the JSON to the run, and publishes
+the directory as the `tf-snag` artifact — which is what the
+`DownloadPipelineArtifact` step above fetches back on the next run.
+
+Drift is reported as **succeeded with issues**, not a failure: the run did its
+job, and the finding is the point. A tool or plan error still fails it.
+
+## `tf-snag-install`
+
+| Input | Default | |
+|---|---|---|
+| `version` | `latest` | a release tag (`v0.1.2`) to pin, or `latest` |
+| `includePrerelease` | `true` | `latest` takes the newest tag of any kind. On by default because tf-snag has not cut a stable release yet — untick it once one exists |
+| `repository` | `wes-key/tf-snag` | change only for a fork |
+| `githubToken` | — | needs read-only **Contents**; required while the repository is private |
+
+Sets `tfSnagPath` and `tfSnagVersion` as output variables, and prepends the
+binary's directory to `PATH` so later steps — including a plain `script:` step —
+can just say `tf-snag`.
+
+The download is cached under the agent tool directory
+(`<tools>/tf-snag/<version>/<arch>`, the layout Microsoft's tool installers use),
+so a self-hosted agent fetches a given release once. Hosted agents start empty
+every run and download each time.
+
+Only **linux/amd64** and **windows/amd64** are published
+(`.github/workflows/ci.yml`); anything else fails here saying so, rather than as
+"cannot execute binary file" two steps later. Self-hosted agents behind a
+corporate proxy are handled — the task tunnels through `Agent.ProxyUrl` when the
+job has one.
+
+## `tf-snag`
+
+Everything is optional. The defaults assume a plan at `plan.json`, its `-json`
+log at `plan.jsonl`, and that you want the tab.
+
+**Inputs**
+
+| Input | Default | |
+|---|---|---|
+| `checks` | `all` | `all`, `drift` or `deprecations` |
+| `plan` | `plan.json` | `terraform show -json` output |
+| `planLog` | `plan.jsonl` | `terraform plan -json` NDJSON log — where the deprecation warnings are |
+| `planLogDir` | — | repo-relative directory the plan ran in, e.g. `terraform` for `-chdir=terraform`. Makes the deprecation links resolve |
+| `source` | `$(Build.SourcesDirectory)` | links findings to the `.tf` declaring them, and picks up inline `# tf-snag:ignore` comments |
+| `ignoreFile` | — | empty auto-discovers `.tf-snag-ignore.yml` |
+| `workingDirectory` | `$(System.DefaultWorkingDirectory)` | where tf-snag runs; relative paths resolve against it |
+
+**Provenance**
+
+| Input | Default | |
+|---|---|---|
+| `baseline` | `$(Pipeline.Workspace)/prev/tf-snag.sarif` | the previous run's SARIF. A missing file is fine and means every finding reads as new |
+| `runUrl` | this run's results page | recorded against findings first seen in this run, so later runs can link one back to the run that caught it |
+| `outputDirectory` | `$(Build.ArtifactStagingDirectory)` | where `tf-snag.json`, `tf-snag.sarif` and `tf-snag.md` land |
+| `artifactName` | `tf-snag` | publishes that directory as a build artifact — next run's baseline. Empty publishes nothing |
+
+**What to publish**
+
+| Input | Default | Surface |
+|---|---|---|
+| `publishAttachment` | `true` | the **tf-snag** tab (a run attachment of type `tf-snag.report`) |
+| `publishSummary` | `false` | a section on the run's **Summary** tab. Needs nothing installed |
+| `publishScansTab` | `false` | the SARIF as a `CodeAnalysisLogs` artifact. Needs the *SARIF SAST Scans Tab* extension in the org |
+
+**Work items** — `workItems` is `off`, `dry-run` or `on`. Start on `dry-run`: it
+exercises auth, the dedup query and the permission pre-check without writing
+anything. `adoUrl` defaults to this project and `adoToken` to
+`$(System.AccessToken)`; the rest (`adoType`, `adoArea`, `adoRaise`, `adoClose`,
+`adoClosedState`) map to the `-ado-*` flags — see
+[Work items](../../README.md#work-items).
+
+Using the pipeline's own identity needs the *&lt;Project&gt; Build Service*
+account to have **Edit work items in this node** on the area path. Without a
+usable token the task logs a warning and skips work items rather than failing on
+the sign-in page Azure DevOps answers an unauthenticated call with.
+
+**Teams** — `teamsWebhook` (or `TF_SNAG_TEAMS_WEBHOOK` in the step's `env`),
+`teamsNotify` (`new` / `findings` / `always`), `teamsContext`,
+`failOnTeamsError`. No webhook, no post. Pass it from a **secret** variable: it
+is a credential, and anyone holding it can post to the channel. An absent
+variable leaves `$(teamsWebhook)` unexpanded, which the task reads as "not
+configured".
+
+**Advanced** — `onDrift` (`warning` / `failure` / `none`) decides what a finding
+does to the task result; `toolPath` points at a binary instead of using the one
+on `PATH`.
+
+**Output variables** — `driftDetected`, `reportJson`, `reportSarif`.
+
+### What it runs, and in what order
+
+The order is load-bearing, and is the one the inline script had:
+
+1. **SARIF** → `tf-snag.sarif`. Written first; nothing here reads it. It carries
+   the stable finding guids that make it the *next* run's baseline.
+2. **markdown** → `tf-snag.md`, when `publishSummary` is on.
+3. **JSON** → `tf-snag.json`. The tab attachment, and the one invocation
+   carrying the `-ado-*` flags — so a finding gets one work item, and the
+   reference is stamped onto the report the tab renders.
+4. **console**, coloured, in a log group. Before the notification, so the log
+   carries the findings even if posting them fails. Its exit code is the verdict.
+5. **Teams**, last, and the only call that sees the webhook: tf-snag posts
+   whenever `TF_SNAG_TEAMS_WEBHOOK` is set, so leaving it in the environment
+   would make each of the four invocations post its own card.
+
+Every report-writing call passes `-exit-code=false` — emitting a report must
+never fail the step. Findings are accounted for once, by the console call.
+
+## Building
+
+No build step and no dependencies: the tasks are plain Node 20 scripts. An
+Azure DevOps task ships with whatever is in its own folder, so vendoring
+`azure-pipelines-task-lib` twice into the `.vsix` would buy little over the
+~200 lines in [`common/vso.js`](common/vso.js) that read inputs, write logging
+commands and run a process. That file is listed once in `vss-extension.json` and
+mapped into both task folders with `packagePath`, so each task is still
+self-contained in the package.
+
+`npm run package` builds the `.vsix`; see [../README.md](../README.md#build).
+
+### Versions and channels
+
+An agent caches a task by **id + version**, so a change does not reach it until
+the version in `task.json` goes up. `tools/stamp-tasks.js` does that at publish
+time, giving the tasks the same `0.<minor>.<run_number>` the extension gets:
+
+```
+node tools/stamp-tasks.js --version 0.6.42 [--channel dev]
+```
+
+Task ids are global to an organisation, so the dev channel — which publishes a
+separate extension id — needs separate task ids too, or installing both would
+collide. `--channel dev` derives them from the production ids (stable, so they
+do not change run to run) and suffixes the names, giving `tf-snag-dev@0` and
+`tf-snag-install-dev@0` alongside the real ones.
+
+The publish workflow runs this for you. It rewrites `task.json` in place, so
+after a local dev-channel package, `git checkout extension/tasks` to put the
+source back.
+
+## Verifying end to end
+
+1. Run the pipeline. The **Install tf-snag** step should log the release tag and
+   the version line; the drift step should log `Drift reports`, a coloured
+   report group and `##vso[task.addattachment …type=tf-snag.report…]`.
+2. Open the run → **tf-snag** tab, and check it against the list in
+   [../README.md](../README.md#verifying-end-to-end).
+3. Drift present → the run is **succeeded with issues**, not failed.
+4. Queue a second run: the **Fetch the previous run reports** step should find
+   the `tf-snag` artifact, and findings should stop reading as new.

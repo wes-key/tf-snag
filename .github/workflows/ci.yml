@@ -3,7 +3,8 @@
 #   tf-snag       linux/amd64    (for CI agents)
 #   tf-snag.exe   windows/amd64  (for local use)
 #
-# vet + test run on every pull request and on pushes to main.
+# vet + test run on every pull request and on pushes to main, alongside a lint of
+# the Azure DevOps extension in extension/ (its tasks have no build step).
 #
 # Releases are tag-driven. Push an annotated tag and CI builds both binaries,
 # stamps the version, and publishes a GitHub Release:
@@ -13,9 +14,9 @@
 #   git tag v0.1.0       && git push origin v0.1.0         -> latest release
 #
 # A tag containing a hyphen (dev.N / rc.N / ...) is marked as a GitHub
-# pre-release, so only a bare vX.Y.Z becomes "latest". The drift pipeline in
-# tf-drift-test-resources downloads the linux binary from the latest release,
-# i.e. it ignores pre-releases.
+# pre-release, so only a bare vX.Y.Z becomes "latest". Nothing here has cut a
+# stable release yet, which is why the tf-snag-install pipeline task takes the
+# newest tag of any kind by default - see extension/tasks/README.md.
 
 name: CI
 
@@ -38,6 +39,26 @@ jobs:
           go-version: '1.23'
       - run: go vet ./...
       - run: go test ./...
+
+  # The Azure DevOps extension has no build and no test runner, so this is the
+  # only thing standing between a typo and a published task that fails on an
+  # agent - which you would find out about after a publish, an install and a
+  # pipeline run.
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Syntax-check the extension scripts
+        run: |
+          set -eu
+          find extension/tab extension/tasks extension/tools -name '*.js' -print0 |
+            xargs -0 -n1 node --check
+      - name: Lint the task manifests
+        working-directory: extension
+        run: node tools/check-tasks.js
 
   release:
     needs: test
