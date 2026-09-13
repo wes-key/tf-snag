@@ -2,154 +2,189 @@ package ado
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// wikisServer serves a Wikis - List response and records what was asked for.
-func wikisServer(t *testing.T, wikis []map[string]any) (*Client, *[]string) {
+// gitWikiServer fakes the Azure DevOps Git API for a wiki repository. files maps
+// a repo path ("/tf-snag/Exceptions.md") to its markdown.
+type gitWikiServer struct {
+	files  map[string]string
+	pushes []gitPush
+	repo   string // name echoed back; empty means "no such repository"
+	branch string
+}
+
+func newGitWikiServer(t *testing.T, s *gitWikiServer) *Client {
 	t.Helper()
-	var seen []string
+	if s.branch == "" {
+		s.branch = "wikiMaster"
+	}
+	if s.files == nil {
+		s.files = map[string]string{}
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = append(seen, r.URL.RequestURI())
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"value": wikis, "count": len(wikis)})
+		q := r.URL.Query()
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pushes"):
+			var p gitPush
+			body, _ := io.ReadAll(r.Body)
+			json.Unmarshal(body, &p)
+			s.pushes = append(s.pushes, p)
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
+
+		case strings.HasSuffix(r.URL.Path, "/refs"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]string{{"name": "refs/heads/" + s.branch, "objectId": "tip-sha"}},
+			})
+
+		case strings.HasSuffix(r.URL.Path, "/items"):
+			content, ok := s.files[q.Get("path")]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"content": content})
+
+		default: // repository lookup
+			if s.repo == "" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{
+				"id": "repo-id", "name": s.repo, "defaultBranch": "refs/heads/" + s.branch,
+			})
+		}
 	}))
 	t.Cleanup(srv.Close)
-	return &Client{OrgURL: srv.URL, Project: "proj", Token: "t"}, &seen
+	return &Client{OrgURL: srv.URL, Project: "proj", Token: "t"}
 }
 
-func TestResolveWikiPrefersTheProjectWiki(t *testing.T) {
-	c, _ := wikisServer(t, []map[string]any{
-		{"id": "code-1", "name": "Docs", "type": CodeWiki, "repositoryId": "r1",
-			"versions": []map[string]string{{"version": "main"}}},
-		{"id": "proj-1", "name": "AnythingAtAll", "type": ProjectWiki},
-	})
+func TestResolveWikiDefaultsToTheProjectWikiRepo(t *testing.T) {
+	fake := &gitWikiServer{repo: "proj.wiki"}
+	c := newGitWikiServer(t, fake)
+
 	got, err := c.ResolveWiki("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Deliberately not named "<project>.wiki": the name is whatever it was
-	// created as, which is why this resolves rather than constructs.
-	if got.ID != "proj-1" {
-		t.Errorf("picked %+v, want the project wiki", got)
-	}
-}
-
-func TestResolveWikiFallsBackToTheOnlyCodeWiki(t *testing.T) {
-	c, _ := wikisServer(t, []map[string]any{
-		{"id": "code-1", "name": "Docs", "type": CodeWiki, "repositoryId": "r1", "mappedPath": "/docs",
-			"versions": []map[string]string{{"version": "main"}}},
-	})
-	got, err := c.ResolveWiki("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ID != "code-1" || got.Branch() != "main" {
-		t.Errorf("got %+v, want the single code wiki on branch main", got)
-	}
-	if !strings.Contains(got.Describe(), "code wiki") || !strings.Contains(got.Describe(), "/docs") {
-		t.Errorf("Describe() = %q, should say where to grant permissions", got.Describe())
-	}
-}
-
-func TestResolveWikiByNameOrID(t *testing.T) {
-	wikis := []map[string]any{
-		{"id": "a-1", "name": "Alpha", "type": CodeWiki, "repositoryId": "r1"},
-		{"id": "b-2", "name": "Beta", "type": CodeWiki, "repositoryId": "r2"},
-	}
-	c, _ := wikisServer(t, wikis)
-	for _, want := range []string{"Beta", "beta", "b-2"} {
-		got, err := c.ResolveWiki(want)
-		if err != nil {
-			t.Fatalf("%q: %v", want, err)
-		}
-		if got.ID != "b-2" {
-			t.Errorf("%q resolved to %+v", want, got)
-		}
-	}
-}
-
-// The failure modes are the point: each should say what to do next.
-func TestResolveWikiErrorsAreActionable(t *testing.T) {
-	// An empty list means "none visible", which is also what a permission problem
-	// looks like - the message has to offer both or it sends people to create a
-	// wiki they already have.
-	none, _ := wikisServer(t, nil)
-	_, err := none.ResolveWiki("")
-	if err == nil {
-		t.Fatal("empty wiki list should be an error")
-	}
-	for _, want := range []string{"no wiki this identity can see", "create one", "cannot read it", "-wiki"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("message missing %q: %v", want, err)
-		}
-	}
-
-	ambiguous, _ := wikisServer(t, []map[string]any{
-		{"id": "a-1", "name": "Alpha", "type": CodeWiki},
-		{"id": "b-2", "name": "Beta", "type": CodeWiki},
-	})
-	_, err = ambiguous.ResolveWiki("")
-	if err == nil || !strings.Contains(err.Error(), "Alpha, Beta") {
-		t.Errorf("ambiguous should list the choices, got: %v", err)
-	}
-
-	_, err = ambiguous.ResolveWiki("Gamma")
-	if err == nil || !strings.Contains(err.Error(), "Alpha, Beta") {
-		t.Errorf("unknown name should list what exists, got: %v", err)
-	}
-}
-
-// A code wiki is a folder on a branch of an ordinary repo; without naming the
-// branch the write lands wherever the service defaults to.
-func TestWikiURLPinsTheBranchForCodeWikisOnly(t *testing.T) {
-	c := &Client{OrgURL: "https://dev.azure.com/org", Project: "proj"}
-
-	code := Wiki{ID: "w1", Type: CodeWiki, Versions: []struct {
-		Version string `json:"version"`
-	}{{Version: "release/1.0"}}}
-	got := c.wikiURL(code, "/tf-snag/Exceptions", "")
-	if !strings.Contains(got, "versionDescriptor.versionType=branch") ||
-		!strings.Contains(got, "versionDescriptor.version=release%2F1.0") {
-		t.Errorf("code wiki URL should pin the branch: %s", got)
-	}
-	if !strings.Contains(got, "path=%2Ftf-snag%2FExceptions") {
-		t.Errorf("page path should be an escaped query parameter: %s", got)
-	}
-
-	project := Wiki{ID: "w2", Type: ProjectWiki}
-	if got := c.wikiURL(project, "/p", ""); strings.Contains(got, "versionDescriptor") {
-		t.Errorf("project wiki needs no branch: %s", got)
-	}
-}
-
-func TestNormalisePath(t *testing.T) {
-	for in, want := range map[string]string{
-		"/tf-snag/Exceptions": "/tf-snag/Exceptions",
-		"tf-snag/Exceptions":  "/tf-snag/Exceptions",
-		"/tf-snag/":           "/tf-snag",
-		"":                    "/",
-		"  /a  ":              "/a",
-	} {
-		if got := normalisePath(in); got != want {
-			t.Errorf("normalisePath(%q) = %q, want %q", in, got, want)
-		}
-	}
-}
-
-// Discovery reflects what the identity may enumerate, which is not always what
-// it may write. An explicitly named wiki must survive an empty list.
-func TestResolveWikiUsesAnExplicitNameWhenDiscoveryIsEmpty(t *testing.T) {
-	c, _ := wikisServer(t, nil)
-	got, err := c.ResolveWiki("tf-snag.wiki")
-	if err != nil {
-		t.Fatalf("an explicit wiki should not need discovering: %v", err)
-	}
-	if got.ID != "tf-snag.wiki" || got.Name != "tf-snag.wiki" {
+	// The repository name IS derivable from the project, unlike the wiki
+	// resource's name.
+	if got.Name != "proj.wiki" || got.ID != "repo-id" {
 		t.Errorf("got %+v", got)
+	}
+	// Read from the repo, not assumed: a code wiki lives on an ordinary branch.
+	if got.Branch != "wikiMaster" {
+		t.Errorf("branch = %q", got.Branch)
+	}
+}
+
+func TestResolveWikiReadsACodeWikiBranch(t *testing.T) {
+	c := newGitWikiServer(t, &gitWikiServer{repo: "docs", branch: "main"})
+	got, err := c.ResolveWiki("docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Branch != "main" {
+		t.Errorf("branch = %q, want main", got.Branch)
+	}
+}
+
+func TestResolveWikiExplainsAMissingRepository(t *testing.T) {
+	c := newGitWikiServer(t, &gitWikiServer{}) // no repo
+	_, err := c.ResolveWiki("nope")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "wiki's repository") {
+		t.Errorf("error should say what the repository is called: %v", err)
+	}
+}
+
+func TestPageReportsAbsence(t *testing.T) {
+	c := newGitWikiServer(t, &gitWikiServer{repo: "proj.wiki"})
+	got, err := c.Page(Wiki{ID: "repo-id", Branch: "wikiMaster"}, "/tf-snag/Exceptions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exists {
+		t.Error("a page that is not in the repo should read as absent")
+	}
+}
+
+// The page and any missing parent go in one commit: a nested page should not
+// land under a heading the wiki has nothing to show for.
+func TestPutCommitsPageAndMissingParentTogether(t *testing.T) {
+	fake := &gitWikiServer{repo: "proj.wiki"}
+	c := newGitWikiServer(t, fake)
+
+	created, err := c.Put(Wiki{ID: "repo-id", Name: "proj.wiki", Branch: "wikiMaster"},
+		"/tf-snag/Exceptions", "register", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Error("a page that did not exist should report as created")
+	}
+	if len(fake.pushes) != 1 {
+		t.Fatalf("pushes = %d, want 1", len(fake.pushes))
+	}
+	p := fake.pushes[0]
+	if p.RefUpdates[0].Name != "refs/heads/wikiMaster" || p.RefUpdates[0].OldObjectID != "tip-sha" {
+		t.Errorf("refUpdate = %+v — the push must be based on the branch tip", p.RefUpdates[0])
+	}
+	changes := p.Commits[0].Changes
+	if len(changes) != 2 {
+		t.Fatalf("changes = %d, want the parent and the page: %+v", len(changes), changes)
+	}
+	if changes[0].Item.Path != "/tf-snag.md" || changes[0].ChangeType != "add" {
+		t.Errorf("parent change = %+v", changes[0])
+	}
+	if changes[1].Item.Path != "/tf-snag/Exceptions.md" || changes[1].ChangeType != "add" {
+		t.Errorf("page change = %+v", changes[1])
+	}
+	if changes[1].NewContent.Content != "register" || changes[1].NewContent.ContentType != "rawtext" {
+		t.Errorf("page content = %+v", changes[1].NewContent)
+	}
+}
+
+func TestPutEditsAnExistingPageAndLeavesTheParentAlone(t *testing.T) {
+	fake := &gitWikiServer{repo: "proj.wiki", files: map[string]string{
+		"/tf-snag.md":            "# tf-snag",
+		"/tf-snag/Exceptions.md": "old",
+	}}
+	c := newGitWikiServer(t, fake)
+
+	created, err := c.Put(Wiki{ID: "repo-id", Branch: "wikiMaster"}, "/tf-snag/Exceptions", "new", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Error("an existing page is edited, not created")
+	}
+	changes := fake.pushes[0].Commits[0].Changes
+	if len(changes) != 1 {
+		t.Fatalf("an existing parent must not be rewritten: %+v", changes)
+	}
+	if changes[0].ChangeType != "edit" {
+		t.Errorf("changeType = %q, want edit", changes[0].ChangeType)
+	}
+}
+
+func TestFilePathMapsPagesToMarkdown(t *testing.T) {
+	for in, want := range map[string]string{
+		"/tf-snag/Exceptions": "/tf-snag/Exceptions.md",
+		"tf-snag/Exceptions":  "/tf-snag/Exceptions.md",
+		"/Drift Exceptions":   "/Drift-Exceptions.md", // the wiki stores spaces as dashes
+		"/a/b/c":              "/a/b/c.md",
+	} {
+		if got := filePath(in); got != want {
+			t.Errorf("filePath(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
@@ -174,65 +209,16 @@ func TestAncestors(t *testing.T) {
 	}
 }
 
-// The API will not create intermediate pages, so a nested register 404s on a
-// wiki that is perfectly reachable. That must not be reported as a missing wiki.
-func TestPutCreatesMissingParentThenRetries(t *testing.T) {
-	var puts []string
-	existing := map[string]bool{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Query().Get("path")
-		switch r.Method {
-		case http.MethodGet:
-			if !existing[path] {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			json.NewEncoder(w).Encode(map[string]string{"content": "x"})
-		case http.MethodPut:
-			puts = append(puts, path)
-			// A child cannot be created before its parent exists.
-			if i := strings.LastIndex(path, "/"); i > 0 && !existing[path[:i]] {
-				w.WriteHeader(http.StatusNotFound)
-				return
-			}
-			existing[path] = true
-			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]string{"path": path})
+func TestNormalisePath(t *testing.T) {
+	for in, want := range map[string]string{
+		"/tf-snag/Exceptions": "/tf-snag/Exceptions",
+		"tf-snag/Exceptions":  "/tf-snag/Exceptions",
+		"/tf-snag/":           "/tf-snag",
+		"":                    "/",
+		"  /a  ":              "/a",
+	} {
+		if got := normalisePath(in); got != want {
+			t.Errorf("normalisePath(%q) = %q, want %q", in, got, want)
 		}
-	}))
-	defer srv.Close()
-
-	c := &Client{OrgURL: srv.URL, Project: "proj", Token: "t"}
-	if _, err := c.Put(Wiki{ID: "w1", Name: "w1"}, "/tf-snag/Exceptions", "body", ""); err != nil {
-		t.Fatalf("Put should recover by creating the parent: %v", err)
-	}
-	want := []string{"/tf-snag/Exceptions", "/tf-snag", "/tf-snag/Exceptions"}
-	if len(puts) != len(want) {
-		t.Fatalf("puts = %v, want %v", puts, want)
-	}
-	for i := range want {
-		if puts[i] != want[i] {
-			t.Fatalf("puts = %v, want %v", puts, want)
-		}
-	}
-}
-
-// A 404 on a top-level page really is about the wiki, and inventing parents
-// would only bury the real error.
-func TestPutDoesNotInventParentsForTopLevelPages(t *testing.T) {
-	var puts int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		puts++
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	c := &Client{OrgURL: srv.URL, Project: "proj", Token: "t"}
-	_, err := c.Put(Wiki{ID: "w1", Name: "w1"}, "/Exceptions", "body", "")
-	if err == nil {
-		t.Fatal("expected the 404 to surface")
-	}
-	if puts != 1 {
-		t.Errorf("made %d requests, want 1 - no parent hunting for a top-level page", puts)
 	}
 }

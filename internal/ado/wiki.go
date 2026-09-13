@@ -4,170 +4,93 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 )
 
-// WikiPermission is what a 403 on these calls is asking for. Work items and the
-// wiki are separate scopes, so a token that raises items happily can still be
-// refused here — worth saying which one is missing.
-const WikiPermission = "Wiki (Read & Write), and Contribute on the wiki's backing repository"
-
-// Wiki types, as the API reports them.
-const (
-	ProjectWiki = "projectWiki" // provisioned for the project
-	CodeWiki    = "codeWiki"    // published from a folder in a Git repo
-)
-
-// Wiki is one wiki in the project.
+// The wiki is written through the **Git** API, not the Wiki API.
 //
-// Note Name is NOT derivable: a project wiki's backing *repository* is called
-// "<Project>.wiki", but the wiki resource itself is named whatever it was
-// created as. Guessing it is how you end up writing to a wiki that is not there,
-// which is why nothing here constructs an identifier.
+// An Azure DevOps wiki is a Git repository of markdown files, and both routes
+// reach the same pages. The difference is the scope: the Wiki API needs
+// vso.wiki_write, which a pipeline's System.AccessToken does not appear to
+// carry, while the Git API needs vso.code_write, which it plainly does — it
+// clones the repository every run. Going through Git is what lets the build
+// service identity publish without a PAT.
+//
+// The symptom that sends you here is worth recording: an identity that cannot
+// use the Wiki API is not refused, it is shown an empty world. Listing wikis
+// returns nothing and writing a page returns 404, so a scope problem reads as a
+// missing wiki.
+
+// WikiPermission is what a failure on these calls is asking for.
+const WikiPermission = "Contribute on the wiki's repository"
+
+// Wiki is the Git repository behind a wiki, and the branch its pages live on.
 type Wiki struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	RepositoryID string `json:"repositoryId"`
-	MappedPath   string `json:"mappedPath"`
-	Versions     []struct {
-		Version string `json:"version"`
-	} `json:"versions"`
+	ID     string // repository id
+	Name   string // repository name, e.g. "<Project>.wiki"
+	Branch string // e.g. "wikiMaster" for a project wiki
 }
 
-// Branch is the version a code wiki is published from. Empty for a project
-// wiki, which has only the one branch the service manages.
-func (w Wiki) Branch() string {
-	if w.Type != CodeWiki || len(w.Versions) == 0 {
-		return ""
-	}
-	return w.Versions[0].Version
-}
+// DefaultWikiRepo is the repository a project wiki is stored in. Unlike the wiki
+// *resource* name, which is whatever the wiki was created as, the repository
+// name is derived from the project and is safe to construct.
+func DefaultWikiRepo(project string) string { return project + ".wiki" }
 
-// Describe names the wiki and what backs it, so a permission failure says where
-// to go: the two types are governed by different repositories.
 func (w Wiki) Describe() string {
-	switch w.Type {
-	case CodeWiki:
-		s := fmt.Sprintf("%s (code wiki, repo %s", w.Name, w.RepositoryID)
-		if b := w.Branch(); b != "" {
-			s += ", branch " + b
-		}
-		if w.MappedPath != "" && w.MappedPath != "/" {
-			s += ", under " + w.MappedPath
-		}
-		return s + ")"
-	case ProjectWiki:
-		return w.Name + " (project wiki)"
-	default:
-		return w.Name
-	}
+	return fmt.Sprintf("%s (git, branch %s)", w.Name, w.Branch)
 }
 
-// Wikis lists the project's wikis. Read-only, so it needs only the wiki read
-// scope — which makes it a cheap pre-check that the token can see anything at
-// all before a write is attempted.
-func (c *Client) Wikis() ([]Wiki, error) {
-	var body struct {
-		Value []Wiki `json:"value"`
+// ResolveWiki looks up the wiki's repository. An empty want uses the project
+// wiki's repository. The branch comes from the repository itself rather than
+// assuming "wikiMaster", since a code wiki lives on an ordinary branch.
+func (c *Client) ResolveWiki(want string) (Wiki, error) {
+	if want == "" {
+		want = DefaultWikiRepo(c.Project)
+	}
+	var repo struct {
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		DefaultBranch string `json:"defaultBranch"`
 	}
 	_, err := c.doWith(reqOpts{
 		method:   http.MethodGet,
-		endpoint: c.wikisEndpoint(),
-		out:      &body,
+		endpoint: c.gitURL("repositories/" + url.PathEscape(want)),
+		out:      &repo,
 		needs:    WikiPermission,
 	})
-	return body.Value, err
-}
-
-func (c *Client) wikisEndpoint() string {
-	return c.projectURL("wiki/wikis") + "?api-version=" + apiVersion
-}
-
-// ResolveWiki finds the wiki to write to. An empty want picks the project wiki,
-// or the only wiki when there is exactly one of any kind.
-//
-// It resolves rather than assumes on purpose: a project can have a provisioned
-// wiki, any number of code wikis, or none at all, and the caller should not have
-// to know which before it can publish.
-func (c *Client) ResolveWiki(want string) (Wiki, error) {
-	all, err := c.Wikis()
 	if err != nil {
-		return Wiki{}, err
+		return Wiki{}, fmt.Errorf("%w — is %q the wiki's repository? A project wiki's is \"<project>.wiki\", "+
+			"a code wiki's is the repository it was published from", err, want)
 	}
-
-	// A named wiki is used whether or not discovery saw it. The list reflects
-	// what this identity is allowed to enumerate, which is not always what it is
-	// allowed to write; refusing an explicit instruction because a discovery call
-	// came back thin turns a working configuration into a dead end.
-	if want != "" && len(all) == 0 {
-		return Wiki{ID: want, Name: want}, nil
+	branch := strings.TrimPrefix(repo.DefaultBranch, "refs/heads/")
+	if branch == "" {
+		branch = "wikiMaster"
 	}
-
-	if len(all) == 0 {
-		// An empty list is not proof there is no wiki. Azure DevOps filters out
-		// what the caller cannot see rather than refusing, and answers a write to
-		// an invisible wiki with 404 rather than 403 — so "none" and "none you
-		// are allowed to see" are indistinguishable here, and saying only the
-		// first sends people off to create a wiki they already have.
-		return Wiki{}, fmt.Errorf("ado: %s returned no wiki this identity can see — either the project has "+
-			"none (create one: Overview > Wiki), or the identity cannot read it (from the wiki page: "+
-			"... > Wiki security, grant Read and Contribute). Name it with -wiki to skip discovery entirely",
-			c.wikisEndpoint())
-	}
-
-	if want != "" {
-		for _, w := range all {
-			if strings.EqualFold(w.Name, want) || strings.EqualFold(w.ID, want) {
-				return w, nil
-			}
-		}
-		return Wiki{}, fmt.Errorf("ado: no wiki named %q in %s — it has: %s",
-			want, c.Project, strings.Join(names(all), ", "))
-	}
-
-	for _, w := range all {
-		if w.Type == ProjectWiki {
-			return w, nil
-		}
-	}
-	if len(all) == 1 {
-		return all[0], nil
-	}
-	return Wiki{}, fmt.Errorf("ado: %s has no project wiki and %d code wikis — name one with -wiki: %s",
-		c.Project, len(all), strings.Join(names(all), ", "))
-}
-
-func names(all []Wiki) []string {
-	out := make([]string, 0, len(all))
-	for _, w := range all {
-		out = append(out, w.Name)
-	}
-	sort.Strings(out)
-	return out
+	return Wiki{ID: repo.ID, Name: repo.Name, Branch: branch}, nil
 }
 
 // WikiPage is one page's current state.
 type WikiPage struct {
 	Content string
-	// ETag identifies the version just read. Azure DevOps requires it back as
-	// If-Match on an update: without it the write is refused, and with a stale
-	// one it is rejected rather than silently clobbering somebody's edit.
+	// ETag is unused on this route: Git guards concurrency with the branch tip,
+	// which Put reads for itself immediately before pushing. Kept so the caller's
+	// contract is the same either way.
 	ETag   string
 	Exists bool
 }
 
-// Page reads a wiki page. A page that does not exist yet is not an error — it
-// is the normal first run, and Put will create it.
+// Page reads a wiki page's markdown from the repository.
 func (c *Client) Page(w Wiki, path string) (WikiPage, error) {
-	var body struct {
+	var item struct {
 		Content string `json:"content"`
 	}
 	resp, err := c.doWith(reqOpts{
-		method:   http.MethodGet,
-		endpoint: c.wikiURL(w, path, "includeContent=true"),
-		out:      &body,
+		method: http.MethodGet,
+		endpoint: c.gitURL("repositories/"+url.PathEscape(w.ID)+"/items") +
+			"&path=" + url.QueryEscape(filePath(path)) +
+			"&versionDescriptor.versionType=branch&versionDescriptor.version=" + url.QueryEscape(w.Branch) +
+			"&includeContent=true",
+		out:      &item,
 		needs:    WikiPermission,
 		allow404: true,
 	})
@@ -177,84 +100,141 @@ func (c *Client) Page(w Wiki, path string) (WikiPage, error) {
 	if resp.StatusCode == http.StatusNotFound {
 		return WikiPage{}, nil
 	}
-	return WikiPage{Content: body.Content, ETag: resp.Header.Get("ETag"), Exists: true}, nil
+	return WikiPage{Content: item.Content, Exists: true}, nil
 }
 
-// Put creates or replaces a page. Pass the ETag from Page for an update; an
-// empty one creates.
+// Put commits the page onto the wiki branch.
 //
-// A nested page whose parent does not exist is answered with 404 — the API does
-// not create intermediate pages the way the web UI does, and a register at
-// /tf-snag/Exceptions is nested by design. So a 404 on a create is retried once
-// after filling in the ancestors, rather than handed back as "the wiki does not
-// exist", which is what it looks like.
-func (c *Client) Put(w Wiki, path, content, etag string) (created bool, err error) {
-	created = etag == ""
-	resp, err := c.putPage(w, path, content, etag)
-	if err == nil || resp == nil || resp.StatusCode != http.StatusNotFound || !created {
-		return created, err
+// One commit, whatever it takes: the page itself, plus any parent page that does
+// not exist yet, so a nested page does not land under a heading the wiki has
+// nothing to show for. Git needs no parent to create a nested path — this is
+// about how the page reads, not whether the write succeeds.
+func (c *Client) Put(w Wiki, path, content, _ string) (created bool, err error) {
+	tip, err := c.branchTip(w)
+	if err != nil {
+		return false, err
 	}
-	parents := ancestors(path)
-	if len(parents) == 0 {
-		return created, err // top-level page: the 404 is about the wiki, not the path
+
+	var changes []gitChange
+	for _, parent := range ancestors(path) {
+		existing, err := c.Page(w, parent)
+		if err != nil {
+			return false, err
+		}
+		if !existing.Exists {
+			changes = append(changes, newChange("add", parent, parentStub(parent)))
+		}
 	}
-	if perr := c.createParents(w, parents); perr != nil {
-		// Both, because they mean different things: if the parent write failed
-		// the same way, the path was never the problem and the wiki itself is
-		// unreachable. Reporting only the original hides that.
-		return created, fmt.Errorf("%w (creating parent page %s also failed: %v)", err, parents[len(parents)-1], perr)
+
+	existing, err := c.Page(w, path)
+	if err != nil {
+		return false, err
 	}
-	_, err = c.putPage(w, path, content, "")
+	created = !existing.Exists
+	changeType := "edit"
+	if created {
+		changeType = "add"
+	}
+	changes = append(changes, newChange(changeType, path, content))
+
+	push := gitPush{
+		RefUpdates: []gitRefUpdate{{Name: "refs/heads/" + w.Branch, OldObjectID: tip}},
+		Commits: []gitCommit{{
+			Comment: "tf-snag: update " + normalisePath(path),
+			Changes: changes,
+		}},
+	}
+	_, err = c.doWith(reqOpts{
+		method:      http.MethodPost,
+		endpoint:    c.gitURL("repositories/" + url.PathEscape(w.ID) + "/pushes"),
+		body:        push,
+		contentType: "application/json",
+		needs:       WikiPermission,
+	})
 	return created, err
 }
 
-func (c *Client) putPage(w Wiki, path, content, etag string) (*http.Response, error) {
-	headers := map[string]string{}
-	if etag != "" {
-		headers["If-Match"] = etag
+// branchTip is the commit the push must be based on. Read immediately before
+// pushing: a stale one is rejected rather than overwriting somebody's commit,
+// which is the behaviour worth having.
+func (c *Client) branchTip(w Wiki) (string, error) {
+	var refs struct {
+		Value []struct {
+			ObjectID string `json:"objectId"`
+		} `json:"value"`
 	}
-	return c.doWith(reqOpts{
-		method:      http.MethodPut,
-		endpoint:    c.wikiURL(w, path, ""),
-		body:        pageBody{Content: content},
-		contentType: "application/json",
-		headers:     headers,
-		needs:       WikiPermission,
+	_, err := c.doWith(reqOpts{
+		method: http.MethodGet,
+		endpoint: c.gitURL("repositories/"+url.PathEscape(w.ID)+"/refs") +
+			"&filter=" + url.QueryEscape("heads/"+w.Branch),
+		out:   &refs,
+		needs: WikiPermission,
 	})
-	// Not allow404: the caller wants the error to keep, and doWith hands back the
-	// response alongside it, which is enough to tell a missing parent from a
-	// missing wiki.
-}
-
-// createParents fills in missing ancestor pages, outermost first. Existing ones
-// are left exactly as they are: somebody may have written a real page there.
-func (c *Client) createParents(w Wiki, parents []string) error {
-	for _, p := range parents {
-		existing, err := c.Page(w, p)
-		if err != nil {
-			return err
-		}
-		if existing.Exists {
-			continue
-		}
-		if _, err := c.doWith(reqOpts{
-			method:      http.MethodPut,
-			endpoint:    c.wikiURL(w, p, ""),
-			body:        pageBody{Content: parentStub(p)},
-			contentType: "application/json",
-			needs:       WikiPermission,
-		}); err != nil {
-			return err
-		}
+	if err != nil {
+		return "", err
 	}
-	return nil
+	if len(refs.Value) == 0 {
+		return "", fmt.Errorf("ado: wiki repository %s has no branch %q", w.Name, w.Branch)
+	}
+	return refs.Value[0].ObjectID, nil
 }
 
-// parentStub is deliberately thin. It exists so a child page can, and says so,
-// rather than looking like a page somebody started and abandoned.
+type gitPush struct {
+	RefUpdates []gitRefUpdate `json:"refUpdates"`
+	Commits    []gitCommit    `json:"commits"`
+}
+
+type gitRefUpdate struct {
+	Name        string `json:"name"`
+	OldObjectID string `json:"oldObjectId"`
+}
+
+type gitCommit struct {
+	Comment string      `json:"comment"`
+	Changes []gitChange `json:"changes"`
+}
+
+type gitChange struct {
+	ChangeType string `json:"changeType"`
+	Item       struct {
+		Path string `json:"path"`
+	} `json:"item"`
+	NewContent struct {
+		Content     string `json:"content"`
+		ContentType string `json:"contentType"`
+	} `json:"newContent"`
+}
+
+func newChange(changeType, page, content string) gitChange {
+	var ch gitChange
+	ch.ChangeType = changeType
+	ch.Item.Path = filePath(page)
+	ch.NewContent.Content = content
+	ch.NewContent.ContentType = "rawtext"
+	return ch
+}
+
+func (c *Client) gitURL(path string) string {
+	return fmt.Sprintf("%s/%s/_apis/git/%s?api-version=%s",
+		c.OrgURL, url.PathEscape(c.Project), path, apiVersion)
+}
+
+// filePath maps a wiki page path to the markdown file backing it: the wiki
+// renders "/tf-snag/Exceptions" from "/tf-snag/Exceptions.md". Spaces are stored
+// as dashes, which is how the wiki writes them itself.
+func filePath(page string) string {
+	p := normalisePath(page)
+	if p == "/" {
+		return "/"
+	}
+	return strings.ReplaceAll(p, " ", "-") + ".md"
+}
+
+// parentStub is deliberately thin. It exists so the page above a nested one is
+// not blank, and says why it is there.
 func parentStub(path string) string {
 	name := path[strings.LastIndex(path, "/")+1:]
-	return "# " + name + "\n\nCreated by tf-snag so its pages below this one can exist.\n"
+	return "# " + name + "\n\nCreated by tf-snag so its pages below this one have a parent.\n"
 }
 
 // ancestors lists the parent pages of a path, outermost first: /a/b/c -> /a, /a/b.
@@ -268,28 +248,6 @@ func ancestors(path string) []string {
 		out = append(out, "/"+strings.Join(parts[:i], "/"))
 	}
 	return out
-}
-
-type pageBody struct {
-	Content string `json:"content"`
-}
-
-// wikiURL builds a pages endpoint, addressing the wiki by id rather than name —
-// a rename should not break a scheduled pipeline. The page path is a query
-// parameter rather than part of the route, so "/tf-snag/Exceptions" stays one
-// value instead of becoming route segments.
-func (c *Client) wikiURL(w Wiki, path, extra string) string {
-	q := "path=" + url.QueryEscape(normalisePath(path)) + "&api-version=" + apiVersion
-	// A code wiki is a folder on a branch of an ordinary repo, and the branch has
-	// to be named or the write lands wherever the service decides is default.
-	if b := w.Branch(); b != "" {
-		q += "&versionDescriptor.versionType=branch&versionDescriptor.version=" + url.QueryEscape(b)
-	}
-	if extra != "" {
-		q += "&" + extra
-	}
-	return fmt.Sprintf("%s/%s/_apis/wiki/wikis/%s/pages?%s",
-		c.OrgURL, url.PathEscape(c.Project), url.PathEscape(w.ID), q)
 }
 
 // normalisePath makes a page path absolute. Azure DevOps treats a leading slash

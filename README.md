@@ -467,21 +467,32 @@ backing repository, so nothing here constructs an identifier.
 `-wiki-page` needs `-ado-url` to say which project. All output goes to stderr,
 so it never contaminates `-format json`/`sarif` on stdout.
 
-**Permissions.** Two different things, and conflating them is why this usually
-fails: a **PAT** needs the **Wiki (Read & Write)** *scope*, while the *identity*
-behind it — a pipeline's `System.AccessToken` runs as `<Project> Build Service` —
-needs **Contribute** on the Git repository backing the wiki.
+**Permissions.** Grant them from the wiki itself: **⋯ → Wiki security**, add the
+identity, set **Read** and **Contribute** to Allow. (The same permissions live
+under *Project settings → Repos → Repositories → the wiki's repo → Security*, but
+that page is no help when Repos is disabled for the project, or when the wiki
+repo simply is not listed.)
 
-Which repository that is depends on the type. A **project wiki** is backed by a
-repo named `<Project>.wiki`, which only exists once the wiki has been created
-(Overview → Wiki). A **code wiki** is backed by the ordinary repo it was
-published from. Either way: **Project settings → Repos → Repositories → *that
-repo* → Security**, add the build service identity, set **Read** and
-**Contribute** to Allow. tf-snag logs which wiki and which repository it is
-writing to, so the target is in the run log.
+**Grant both build service identities.** A pipeline's `System.AccessToken` runs
+as either `<Project> Build Service (<org>)` or `Project Collection Build Service
+(<org>)` depending on the pipeline's *Build job authorization scope*. Adding only
+one and getting no change is the single most likely reason this does not work.
+Using a PAT instead? It needs the **Wiki (Read & Write)** scope *and* the user
+behind it needs Contribute — the scope bounds what the token may do, the
+permission decides what the identity may do.
 
-Work items are a separate scope, so a token that raises items happily can still
-be refused here.
+**A permission problem does not look like one.** Azure DevOps hides what an
+identity cannot see rather than refusing it, so an unreadable wiki is reported as
+an empty wiki list, and a write to it comes back **404**, not 403. If tf-snag
+says it can see no wiki while you can see one in the browser, it is access — not
+a missing wiki, and not the page path. Compare the two directly:
+
+```
+https://dev.azure.com/<org>/<project>/_apis/wiki/wikis?api-version=7.0
+```
+
+Work items are a separate scope, so an identity that raises items happily can
+still be refused here.
 
 Set `-ado-work-items=false` to use `-ado-url` purely as the project locator when
 you want the register without raising anything.

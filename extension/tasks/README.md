@@ -198,11 +198,15 @@ to remove. `wiki` names the wiki (default: the project wiki), `wikiDryRun` print
 the page without writing.
 
 It shares `adoUrl` and `adoToken` with work items, so set `workItems: off` to use
-them for the register alone. A PAT needs the **Wiki (Read & Write)** scope; the
-default `$(System.AccessToken)` identity needs **Contribute** on the wiki repo
-(**Project settings → Repos → Repositories → `<project>.wiki` → Security**).
-Either way it is separate from Work Items, so one that raises items can still be
-refused here. The page is only written when its content has changed, so a daily run does
+them for the register alone.
+
+Permissions come from the wiki's own **⋯ → Wiki security**: add **both**
+`<Project> Build Service (<org>)` and `Project Collection Build Service (<org>)`
+with **Read** and **Contribute**. Which of the two the job runs as depends on the
+pipeline's *Build job authorization scope*, and granting only one is the usual
+reason this silently does nothing. A permission problem surfaces as *"no wiki
+this identity can see"* or a **404**, never a 403 — Azure DevOps hides what you
+cannot see rather than refusing it. The page is only written when its content has changed, so a daily run does
 not bury the wiki revisions that mean something. One page per pipeline: two
 pointed at the same path will overwrite each other.
 

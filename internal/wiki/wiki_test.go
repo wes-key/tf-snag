@@ -115,7 +115,7 @@ func TestRenderIsDeterministic(t *testing.T) {
 
 // --- publishing --------------------------------------------------------------
 
-var testWiki = ado.Wiki{ID: "w-1", Name: "proj.wiki", Type: ado.ProjectWiki}
+var testWiki = ado.Wiki{ID: "w-1", Name: "proj.wiki", Branch: "wikiMaster"}
 
 type fakeWiki struct {
 	page  Page
