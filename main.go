@@ -36,6 +36,55 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
+// wordmark is the startup banner, drawn for -version and -help and nowhere
+// else. Every other invocation writes a report to stdout - JSON, SARIF, JUnit,
+// markdown, a Teams card - and a pipeline redirects that straight to a file, so
+// there is no run in which decoration on stdout would be anything but corruption.
+const wordmark = `
+████████╗███████╗   ███████╗███╗   ██╗ █████╗  ██████╗
+╚══██╔══╝██╔════╝   ██╔════╝████╗  ██║██╔══██╗██╔════╝
+   ██║   █████╗     ███████╗██╔██╗ ██║███████║██║  ███╗
+   ██║   ██╔══╝     ╚════██║██║╚██╗██║██╔══██║██║   ██║
+   ██║   ██║        ███████║██║ ╚████║██║  ██║╚██████╔╝
+   ╚═╝   ╚═╝        ╚══════╝╚═╝  ╚═══╝╚═╝  ╚═╝ ╚═════╝
+`
+
+// bannerPurple is #7B42BC, the Terraform purple the extension's logo and task
+// icons are drawn in (extension/tools/genlogo/main.go), as its 256-colour
+// approximation - the report's own palette is 16-colour, but nothing there is
+// trying to match artwork. A terminal that does not know the code ignores it and
+// prints the wordmark plain.
+const bannerPurple = "\x1b[1;38;5;99m"
+
+// writeWordmark draws the banner one line at a time rather than wrapping the
+// whole block in a single colour pair: an Azure DevOps log prefixes every line
+// it renders, and colour spanning a newline bleeds into the prefix.
+func writeWordmark(w io.Writer, useColor bool) {
+	for _, line := range strings.Split(strings.Trim(wordmark, "\n"), "\n") {
+		if useColor {
+			fmt.Fprintf(w, "%s%s\x1b[0m\n", bannerPurple, line)
+		} else {
+			fmt.Fprintln(w, line)
+		}
+	}
+	fmt.Fprintln(w)
+}
+
+// bannerColor follows the same rules as the report - -color, then NO_COLOR -
+// but auto-detects against the stream the banner is actually going to, which is
+// always stderr. Checking stdout instead would colour the banner in a pipeline,
+// where the drift step passes -color=always to a log that is not a terminal.
+func bannerColor(mode string, stderr io.Writer) bool {
+	switch mode {
+	case "always":
+		return true
+	case "never":
+		return false
+	default:
+		return os.Getenv("NO_COLOR") == "" && isTerminal(stderr)
+	}
+}
+
 // versionLine is a single line identifying the binary, e.g.
 //
 //	tf-snag 0.1.7 (a1b2c3d4e5f6) linux/amd64 go1.23.4
@@ -99,6 +148,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	adoDryRun := fs.Bool("ado-dry-run", false, "report the work items that would be raised or closed, without changing anything")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
+		writeWordmark(stderr, bannerColor(*color, stderr))
 		fmt.Fprintln(stderr, "usage: terraform show -json PLANFILE | tf-snag [flags]")
 		fmt.Fprintln(stderr)
 		fs.PrintDefaults()
@@ -108,6 +158,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	if *showVersion {
+		// Banner to stderr, version to stdout. `tf-snag -version` stays exactly
+		// one parseable line for anything reading it, and a person still gets
+		// the wordmark.
+		writeWordmark(stderr, bannerColor(*color, stderr))
 		fmt.Fprintln(stdout, versionLine())
 		return 0
 	}
