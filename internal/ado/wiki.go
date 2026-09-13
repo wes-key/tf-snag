@@ -182,12 +182,35 @@ func (c *Client) Page(w Wiki, path string) (WikiPage, error) {
 
 // Put creates or replaces a page. Pass the ETag from Page for an update; an
 // empty one creates.
+//
+// A nested page whose parent does not exist is answered with 404 — the API does
+// not create intermediate pages the way the web UI does, and a register at
+// /tf-snag/Exceptions is nested by design. So a 404 on a create is retried once
+// after filling in the ancestors, rather than handed back as "the wiki does not
+// exist", which is what it looks like.
 func (c *Client) Put(w Wiki, path, content, etag string) (created bool, err error) {
+	created = etag == ""
+	resp, err := c.putPage(w, path, content, etag)
+	if err == nil || resp == nil || resp.StatusCode != http.StatusNotFound || !created {
+		return created, err
+	}
+	parents := ancestors(path)
+	if len(parents) == 0 {
+		return created, err // top-level page: the 404 is about the wiki, not the path
+	}
+	if perr := c.createParents(w, parents); perr != nil {
+		return created, err // report the original failure, not a symptom of it
+	}
+	_, err = c.putPage(w, path, content, "")
+	return created, err
+}
+
+func (c *Client) putPage(w Wiki, path, content, etag string) (*http.Response, error) {
 	headers := map[string]string{}
 	if etag != "" {
 		headers["If-Match"] = etag
 	}
-	_, err = c.doWith(reqOpts{
+	return c.doWith(reqOpts{
 		method:      http.MethodPut,
 		endpoint:    c.wikiURL(w, path, ""),
 		body:        pageBody{Content: content},
@@ -195,7 +218,53 @@ func (c *Client) Put(w Wiki, path, content, etag string) (created bool, err erro
 		headers:     headers,
 		needs:       WikiPermission,
 	})
-	return etag == "", err
+	// Not allow404: the caller wants the error to keep, and doWith hands back the
+	// response alongside it, which is enough to tell a missing parent from a
+	// missing wiki.
+}
+
+// createParents fills in missing ancestor pages, outermost first. Existing ones
+// are left exactly as they are: somebody may have written a real page there.
+func (c *Client) createParents(w Wiki, parents []string) error {
+	for _, p := range parents {
+		existing, err := c.Page(w, p)
+		if err != nil {
+			return err
+		}
+		if existing.Exists {
+			continue
+		}
+		if _, err := c.doWith(reqOpts{
+			method:      http.MethodPut,
+			endpoint:    c.wikiURL(w, p, ""),
+			body:        pageBody{Content: parentStub(p)},
+			contentType: "application/json",
+			needs:       WikiPermission,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parentStub is deliberately thin. It exists so a child page can, and says so,
+// rather than looking like a page somebody started and abandoned.
+func parentStub(path string) string {
+	name := path[strings.LastIndex(path, "/")+1:]
+	return "# " + name + "\n\nCreated by tf-snag so its pages below this one can exist.\n"
+}
+
+// ancestors lists the parent pages of a path, outermost first: /a/b/c -> /a, /a/b.
+func ancestors(path string) []string {
+	parts := strings.Split(strings.Trim(normalisePath(path), "/"), "/")
+	if len(parts) < 2 {
+		return nil
+	}
+	out := make([]string, 0, len(parts)-1)
+	for i := 1; i < len(parts); i++ {
+		out = append(out, "/"+strings.Join(parts[:i], "/"))
+	}
+	return out
 }
 
 type pageBody struct {
