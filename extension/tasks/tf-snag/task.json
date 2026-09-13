@@ -263,7 +263,7 @@
       "defaultValue": false,
       "required": false,
       "groupName": "wiki",
-      "helpMarkDown": "Print the page to the log and report what would change, without writing. Still reads the wiki, so it exercises the token and the **Wiki (Read & Write)** permission — which is a different scope from work items."
+      "helpMarkDown": "Print the page to the log and report what would change, without writing. Still reads the wiki, so it exercises the token and its wiki access — a PAT needs the **Wiki (Read & Write)** scope, and the `System.AccessToken` identity needs **Contribute** on the `<project>.wiki` repository, under Project settings > Repos > Repositories. Separate from work items either way."
     },
 
     {

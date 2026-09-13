@@ -195,8 +195,14 @@ func checkStatus(resp *http.Response, body []byte, method, endpoint, needs strin
 		return fmt.Errorf("ado: token lacks permission for %s (%s) — it needs %s",
 			describe(method, endpoint), resp.Status, needs)
 	case http.StatusNotFound:
-		return fmt.Errorf("ado: %s returned %s — check the organisation, project and work item type exist",
-			describe(method, endpoint), resp.Status)
+		// The hint has to match the call. A 404 from a wiki write telling you to
+		// check the work item type sends you looking in the wrong place entirely.
+		missing := "the organisation, project and work item type exist"
+		if strings.Contains(endpoint, "/wiki/") {
+			missing = "the wiki exists and the page path is valid"
+		}
+		return fmt.Errorf("ado: %s returned %s — check %s",
+			describe(method, endpoint), resp.Status, missing)
 	}
 	return fmt.Errorf("ado: %s returned %s%s", describe(method, endpoint), resp.Status, detail(body))
 }

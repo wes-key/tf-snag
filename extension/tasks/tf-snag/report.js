@@ -57,9 +57,16 @@ function main() {
     writeReport(cfg, out.markdown, common.concat(["-format", "markdown"]), env, "markdown summary");
   }
 
-  writeReport(cfg, out.json, common.concat(baseline, cfg.adoArgs, ["-format", "json"]), env, "JSON (tf-snag tab)");
-
-  publish(cfg, out);
+  // The JSON call is the one carrying the -ado flags, so a failure here can be
+  // the work items or the wiki rather than the report itself - and the report
+  // will already have been written by the time either runs. Publish whatever was
+  // produced before re-raising, so an unreachable Azure DevOps costs you the
+  // side-effect, not the tab.
+  try {
+    writeReport(cfg, out.json, common.concat(baseline, cfg.adoArgs, ["-format", "json"]), env, "JSON (tf-snag tab)");
+  } finally {
+    publish(cfg, out);
+  }
 
   vso.section("Drift check");
   vso.group("tf-snag report");
@@ -92,7 +99,9 @@ function writeReport(cfg, file, args, env, what) {
 }
 
 function publish(cfg, out) {
-  if (cfg.publishAttachment) {
+  // Size-checked because publish also runs on the failure path: an empty file
+  // would give the tab an attachment it can only render as an error.
+  if (cfg.publishAttachment && nonEmpty(out.json)) {
     // The type is the contract with the tab (tab/drift.js). Keep it exact.
     vso.addAttachment(ATTACHMENT_TYPE, "tf-snag", out.json);
   }
@@ -108,6 +117,14 @@ function publish(cfg, out) {
     // The whole output directory, because what next run wants back is the SARIF
     // and what a human wants back is the markdown.
     vso.uploadArtifact(cfg.artifactName, cfg.outDir);
+  }
+}
+
+function nonEmpty(file) {
+  try {
+    return fs.statSync(file).size > 0;
+  } catch (e) {
+    return false;
   }
 }
 

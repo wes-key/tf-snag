@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/wes-key/tf-snag/internal/ado"
 	"github.com/wes-key/tf-snag/internal/ignore"
 	"github.com/wes-key/tf-snag/internal/report"
 )
@@ -114,6 +115,8 @@ func TestRenderIsDeterministic(t *testing.T) {
 
 // --- publishing --------------------------------------------------------------
 
+var testWiki = ado.Wiki{ID: "w-1", Name: "proj.wiki", Type: ado.ProjectWiki}
+
 type fakeWiki struct {
 	page  Page
 	puts  int
@@ -121,8 +124,8 @@ type fakeWiki struct {
 	saved string
 }
 
-func (f *fakeWiki) Page(wiki, path string) (Page, error) { return f.page, nil }
-func (f *fakeWiki) Put(wiki, path, content, etag string) (bool, error) {
+func (f *fakeWiki) Page(w ado.Wiki, path string) (Page, error) { return f.page, nil }
+func (f *fakeWiki) Put(w ado.Wiki, path, content, etag string) (bool, error) {
 	f.puts++
 	f.etag = etag
 	f.saved = content
@@ -136,7 +139,7 @@ func TestPublishSkipsAnIdenticalPage(t *testing.T) {
 
 	f := &fakeWiki{page: Page{Content: body, ETag: `"v1"`, Exists: true}}
 	var log bytes.Buffer
-	res, err := Publish(f, "proj.wiki", "/tf-snag/Exceptions", later, false, &log)
+	res, err := Publish(f, testWiki, "/tf-snag/Exceptions", later, false, &log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +155,7 @@ func TestPublishCreatesWhenAbsentAndUpdatesWithETag(t *testing.T) {
 	var log bytes.Buffer
 
 	absent := &fakeWiki{page: Page{Exists: false}}
-	res, err := Publish(absent, "proj.wiki", "/p", "new content", false, &log)
+	res, err := Publish(absent, testWiki, "/p", "new content", false, &log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +164,7 @@ func TestPublishCreatesWhenAbsentAndUpdatesWithETag(t *testing.T) {
 	}
 
 	existing := &fakeWiki{page: Page{Content: "old", ETag: `"v7"`, Exists: true}}
-	res, err = Publish(existing, "proj.wiki", "/p", "new content", false, &log)
+	res, err = Publish(existing, testWiki, "/p", "new content", false, &log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,7 +180,7 @@ func TestPublishCreatesWhenAbsentAndUpdatesWithETag(t *testing.T) {
 func TestPublishDryRunWritesNothing(t *testing.T) {
 	f := &fakeWiki{page: Page{Content: "old", ETag: `"v1"`, Exists: true}}
 	var log bytes.Buffer
-	if _, err := Publish(f, "proj.wiki", "/p", "new", true, &log); err != nil {
+	if _, err := Publish(f, testWiki, "/p", "new", true, &log); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 0 {

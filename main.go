@@ -149,7 +149,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	adoWorkItems := fs.Bool("ado-work-items", true, "raise work items when -ado-url is set. Turn off to use -ado-url purely as the project locator, e.g. for -wiki-page alone")
 	adoDryRun := fs.Bool("ado-dry-run", false, "report the work items that would be raised or closed, without changing anything")
 	wikiPage := fs.String("wiki-page", "", "Azure DevOps wiki `path` to publish the exceptions register to, e.g. /tf-snag/Exceptions; needs -ado-url")
-	wikiName := fs.String("wiki", "", "wiki `name` or id to write to (default: the project wiki, <project>.wiki)")
+	wikiName := fs.String("wiki", "", "wiki `name` or id to write to (default: the project wiki, or the only wiki when there is one)")
 	wikiDryRun := fs.Bool("wiki-dry-run", false, "report what would be written to the wiki, and print the page, without changing anything")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
@@ -338,21 +338,6 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if *wikiPage != "" {
-		cfg := wikiConfig{
-			url:     *adoURL,
-			token:   firstNonEmpty(*adoToken, os.Getenv("TF_SNAG_ADO_TOKEN")),
-			wiki:    *wikiName,
-			page:    *wikiPage,
-			dryRun:  *wikiDryRun,
-			runURL:  *runURL,
-			context: *teamsContext,
-		}
-		if code := publishExceptions(rep, ignoreSet, cfg, stderr); code != 0 {
-			return code
-		}
-	}
-
 	switch *format {
 	case "text":
 		if useColor {
@@ -377,6 +362,25 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
 		return 2
+	}
+
+	// After the report is on stdout, not before. The register only reads the
+	// report, so an unreachable wiki must not cost the run its tab attachment -
+	// which is what happened when this sat above the write. Work items stay
+	// before it because they stamp item references onto the report itself.
+	if *wikiPage != "" {
+		cfg := wikiConfig{
+			url:     *adoURL,
+			token:   firstNonEmpty(*adoToken, os.Getenv("TF_SNAG_ADO_TOKEN")),
+			wiki:    *wikiName,
+			page:    *wikiPage,
+			dryRun:  *wikiDryRun,
+			runURL:  *runURL,
+			context: *teamsContext,
+		}
+		if code := publishExceptions(rep, ignoreSet, cfg, stderr); code != 0 {
+			return code
+		}
 	}
 
 	if hook != "" {
@@ -446,10 +450,15 @@ func publishExceptions(rep *report.Report, set *ignore.Set, cfg wikiConfig, stde
 		fmt.Fprintln(stderr, "tf-snag: no Azure DevOps token — set $TF_SNAG_ADO_TOKEN or -ado-token")
 		return 2
 	}
-	wikiID := cfg.wiki
-	if wikiID == "" {
-		wikiID = ado.DefaultWiki(project)
+	client := &ado.Client{OrgURL: orgURL, Project: project, Token: cfg.token}
+	// Resolved, not constructed: a project wiki's name is not derivable from the
+	// project name, and a project may have only code wikis, several, or none.
+	target, err := client.ResolveWiki(cfg.wiki)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
 	}
+	fmt.Fprintln(stderr, "wiki: writing to "+target.Describe())
 
 	exs := set.Exceptions()
 	wiki.SortExceptions(exs)
@@ -461,8 +470,7 @@ func publishExceptions(rep *report.Report, set *ignore.Set, cfg wikiConfig, stde
 		fmt.Fprintln(stderr, "-------------------------------")
 	}
 
-	client := wiki.Client{Client: &ado.Client{OrgURL: orgURL, Project: project, Token: cfg.token}}
-	if _, err := wiki.Publish(client, wikiID, cfg.page, page, cfg.dryRun, stderr); err != nil {
+	if _, err := wiki.Publish(wiki.Client{Client: client}, target, cfg.page, page, cfg.dryRun, stderr); err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
 		return 2
 	}

@@ -198,9 +198,11 @@ to remove. `wiki` names the wiki (default: the project wiki), `wikiDryRun` print
 the page without writing.
 
 It shares `adoUrl` and `adoToken` with work items, so set `workItems: off` to use
-them for the register alone. The token needs **Wiki (Read & Write)** on top of
-Work Items — a different scope, so one that raises items can still be refused
-here. The page is only written when its content has changed, so a daily run does
+them for the register alone. A PAT needs the **Wiki (Read & Write)** scope; the
+default `$(System.AccessToken)` identity needs **Contribute** on the wiki repo
+(**Project settings → Repos → Repositories → `<project>.wiki` → Security**).
+Either way it is separate from Work Items, so one that raises items can still be
+refused here. The page is only written when its content has changed, so a daily run does
 not bury the wiki revisions that mean something. One page per pipeline: two
 pointed at the same path will overwrite each other.
 

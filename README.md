@@ -455,15 +455,36 @@ regardless, so comparing is free, and a daily check that rewrites an identical
 page buries the revisions that mean something. The generated-at footer is
 excluded from that comparison, or every run would differ.
 
-**Flags.** `-wiki` names the wiki (default: the project wiki, `<project>.wiki`);
+**Which wiki.** Discovered, not assumed: tf-snag lists the project's wikis and
+picks the **project wiki**, or the only one when a project has a single code
+wiki. `-wiki` names one explicitly (by name or id) when there are several. A
+project with no wiki at all is reported as such rather than as a missing page —
+and note a project wiki's *name* is not `<project>.wiki`, that is only its
+backing repository, so nothing here constructs an identifier.
+
+**Flags.** `-wiki` names the wiki;
 `-wiki-dry-run` prints the page and reports what would happen without writing.
 `-wiki-page` needs `-ado-url` to say which project. All output goes to stderr,
 so it never contaminates `-format json`/`sarif` on stdout.
 
-**Permissions.** The token needs **Wiki (Read & Write)** — a different scope from
-work items, so a token that raises items happily can still be refused here. Set
-`-ado-work-items=false` to use `-ado-url` purely as the project locator when you
-want the register without raising anything.
+**Permissions.** Two different things, and conflating them is why this usually
+fails: a **PAT** needs the **Wiki (Read & Write)** *scope*, while the *identity*
+behind it — a pipeline's `System.AccessToken` runs as `<Project> Build Service` —
+needs **Contribute** on the Git repository backing the wiki.
+
+Which repository that is depends on the type. A **project wiki** is backed by a
+repo named `<Project>.wiki`, which only exists once the wiki has been created
+(Overview → Wiki). A **code wiki** is backed by the ordinary repo it was
+published from. Either way: **Project settings → Repos → Repositories → *that
+repo* → Security**, add the build service identity, set **Read** and
+**Contribute** to Allow. tf-snag logs which wiki and which repository it is
+writing to, so the target is in the run log.
+
+Work items are a separate scope, so a token that raises items happily can still
+be refused here.
+
+Set `-ado-work-items=false` to use `-ado-url` purely as the project locator when
+you want the register without raising anything.
 
 ## Azure DevOps
 

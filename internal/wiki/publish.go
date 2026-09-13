@@ -11,8 +11,8 @@ import (
 // Publisher is the subset of *ado.Client this package needs, so the publish
 // logic can be tested without an Azure DevOps instance.
 type Publisher interface {
-	Page(wiki, path string) (Page, error)
-	Put(wiki, path, content, etag string) (created bool, err error)
+	Page(w ado.Wiki, path string) (Page, error)
+	Put(w ado.Wiki, path, content, etag string) (created bool, err error)
 }
 
 // Page mirrors ado.WikiPage. Declared here so the interface above does not drag
@@ -27,8 +27,8 @@ type Page struct {
 // be tested against a fake instead of an Azure DevOps instance.
 type Client struct{ *ado.Client }
 
-func (c Client) Page(wikiID, path string) (Page, error) {
-	p, err := c.Client.Page(wikiID, path)
+func (c Client) Page(w ado.Wiki, path string) (Page, error) {
+	p, err := c.Client.Page(w, path)
 	return Page{Content: p.Content, ETag: p.ETag, Exists: p.Exists}, err
 }
 
@@ -47,14 +47,14 @@ type Result struct {
 // its ETag regardless, so the check is free.
 //
 // dryRun reports what would happen and writes nothing.
-func Publish(p Publisher, wikiID, path, content string, dryRun bool, log io.Writer) (Result, error) {
-	cur, err := p.Page(wikiID, path)
+func Publish(p Publisher, w ado.Wiki, path, content string, dryRun bool, log io.Writer) (Result, error) {
+	cur, err := p.Page(w, path)
 	if err != nil {
-		return Result{}, fmt.Errorf("reading %s%s: %w", wikiID, path, err)
+		return Result{}, fmt.Errorf("reading %s%s: %w", w.Name, path, err)
 	}
 
 	if cur.Exists && sameContent(cur.Content, content) {
-		fmt.Fprintf(log, "wiki: %s%s is already up to date\n", wikiID, path)
+		fmt.Fprintf(log, "wiki: %s%s is already up to date\n", w.Name, path)
 		return Result{Unchanged: true}, nil
 	}
 
@@ -63,13 +63,13 @@ func Publish(p Publisher, wikiID, path, content string, dryRun bool, log io.Writ
 		verb = "creating"
 	}
 	if dryRun {
-		fmt.Fprintf(log, "wiki: would be %s %s%s (%d bytes)\n", verb, wikiID, path, len(content))
+		fmt.Fprintf(log, "wiki: would be %s %s%s (%d bytes)\n", verb, w.Name, path, len(content))
 		return Result{Created: !cur.Exists, Updated: cur.Exists}, nil
 	}
 
-	fmt.Fprintf(log, "wiki: %s %s%s\n", verb, wikiID, path)
-	if _, err := p.Put(wikiID, path, content, cur.ETag); err != nil {
-		return Result{}, fmt.Errorf("writing %s%s: %w", wikiID, path, err)
+	fmt.Fprintf(log, "wiki: %s %s%s\n", verb, w.Name, path)
+	if _, err := p.Put(w, path, content, cur.ETag); err != nil {
+		return Result{}, fmt.Errorf("writing %s%s: %w", w.Name, path, err)
 	}
 	return Result{Created: !cur.Exists, Updated: cur.Exists}, nil
 }
