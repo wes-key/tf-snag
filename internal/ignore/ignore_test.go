@@ -3,11 +3,101 @@ package ignore
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/wes-key/tf-snag/internal/report"
 )
+
+// A bare `# tf-snag:ignore` is filed under both checks. The register has to
+// report it once, with both scopes - not as two lookalike rules.
+func TestExceptionsFoldsBothScopesIntoOneEntry(t *testing.T) {
+	src := `
+resource "azurerm_key_vault" "vault" {
+  # tf-snag:ignore reason: owned by the security baseline
+  name = "x"
+}
+`
+	s := &Set{}
+	scanFile(strings.NewReader(src), "main.tf", s)
+
+	got := s.Exceptions()
+	if len(got) != 1 {
+		t.Fatalf("Exceptions() = %d entries, want 1: %+v", len(got), got)
+	}
+	if want := []string{"drift", "deprecation"}; !reflect.DeepEqual(got[0].Scopes, want) {
+		t.Errorf("scopes = %v, want %v", got[0].Scopes, want)
+	}
+	if got[0].Reason != "owned by the security baseline" {
+		t.Errorf("reason = %q", got[0].Reason)
+	}
+	if !got[0].Stale() {
+		t.Error("a rule that has suppressed nothing should read as stale")
+	}
+}
+
+func TestExceptionsRecordsWhatEachRuleSuppressed(t *testing.T) {
+	src := `
+# tf-snag:ignore-drift reason: reconciled by the ingest job
+resource "azurerm_storage_container" "test" {
+  name = "x"
+}
+
+resource "azurerm_key_vault" "vault" {
+  # tf-snag:ignore-drift reason: nothing drifts here
+  name = "y"
+}
+`
+	s := &Set{}
+	scanFile(strings.NewReader(src), "main.tf", s)
+
+	rep := &report.Report{Drift: []report.ResourceReport{
+		{Address: "module.sa[0].azurerm_storage_container.test"},
+	}}
+	s.Apply(rep)
+
+	got := s.Exceptions()
+	if len(got) != 2 {
+		t.Fatalf("Exceptions() = %d entries, want 2", len(got))
+	}
+	if got[0].Stale() {
+		t.Errorf("rule that matched should not be stale: %+v", got[0])
+	}
+	if len(got[0].Hits) != 1 || got[0].Hits[0].Address != "module.sa[0].azurerm_storage_container.test" {
+		t.Errorf("hits = %+v", got[0].Hits)
+	}
+	if got[0].Hits[0].Kind != "drift" {
+		t.Errorf("hit kind = %q, want drift", got[0].Hits[0].Kind)
+	}
+	if !got[1].Stale() {
+		t.Errorf("rule that matched nothing should be stale: %+v", got[1])
+	}
+}
+
+// Merge renumbers, or the file set and the source set - both numbered from 0 -
+// would collide and report each other's hits.
+func TestMergeKeepsRuleIdentitiesDistinct(t *testing.T) {
+	a := &Set{}
+	scanFile(strings.NewReader("# tf-snag:ignore-drift reason: a\nresource \"t\" \"one\" {\n}\n"), "a.tf", a)
+	b := &Set{}
+	scanFile(strings.NewReader("# tf-snag:ignore-drift reason: b\nresource \"t\" \"two\" {\n}\n"), "b.tf", b)
+
+	a.Merge(b)
+	rep := &report.Report{Drift: []report.ResourceReport{{Address: "t.two"}}}
+	a.Apply(rep)
+
+	got := a.Exceptions()
+	if len(got) != 2 {
+		t.Fatalf("Exceptions() = %d, want 2", len(got))
+	}
+	if !got[0].Stale() {
+		t.Errorf("rule a matched nothing but reports hits: %+v", got[0].Hits)
+	}
+	if got[1].Stale() || got[1].Reason != "b" {
+		t.Errorf("rule b should own the hit, got %+v", got[1])
+	}
+}
 
 func TestGlobMatch(t *testing.T) {
 	cases := []struct {

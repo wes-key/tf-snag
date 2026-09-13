@@ -176,6 +176,7 @@ log at `plan.jsonl`, and that you want the tab.
 | `publishAttachment` | `true` | the **tf-snag** tab (a run attachment of type `tf-snag.report`) |
 | `publishSummary` | `false` | a section on the run's **Summary** tab. Needs nothing installed |
 | `publishScansTab` | `false` | the SARIF as a `CodeAnalysisLogs` artifact. Needs the *SARIF SAST Scans Tab* extension in the org |
+| `wikiPage` | — | the exceptions register on a wiki page — see below |
 
 **Work items** — `workItems` is `off`, `dry-run` or `on`. Start on `dry-run`: it
 exercises auth, the dedup query and the permission pre-check without writing
@@ -188,6 +189,52 @@ Using the pipeline's own identity needs the *&lt;Project&gt; Build Service*
 account to have **Edit work items in this node** on the area path. Without a
 usable token the task logs a warning and skips work items rather than failing on
 the sign-in page Azure DevOps answers an unauthenticated call with.
+
+**Exceptions register** — `wikiPage` publishes a register of every ignore rule to
+an Azure DevOps wiki page: what is waived, why, where it is defined, and what it
+currently suppresses. Rules that have stopped suppressing anything get their own
+table — a waiver whose drift was fixed is one nobody needs and nobody will think
+to remove. `wiki` names the wiki (default: the project wiki), `wikiDryRun` prints
+the page without writing.
+
+It shares `adoUrl` and `adoToken` with work items, so set `workItems: off` to use
+them for the register alone.
+
+The register is written as a **commit to the wiki's Git repository**, not through
+the Wiki API — the build service identity has repository access and does not
+appear to have wiki access, so this is what lets it publish without a PAT.
+
+`wiki` therefore names the wiki's **repository** (`<Project>.wiki` for a project
+wiki), by name or id; pin the id if the name does not resolve. The identity needs
+**Contribute** on it, granted from the wiki's **⋯ → Wiki security**. Expect a
+**404** rather than a 403 when it is missing: Azure DevOps hides what an identity
+cannot see rather than refusing it.
+
+**The pipeline has to reference the wiki repository**, or the job's token never
+reaches it and every call returns 404 no matter what has been granted — *Limit
+job authorization scope to referenced Azure DevOps repositories* scopes the token
+before permissions are consulted, and the wiki is a separate repository. Either
+name it in the pipeline:
+
+```yaml
+resources:
+  repositories:
+    - repository: wiki
+      type: git
+      name: <Project>.wiki
+
+jobs:
+  - job: drift
+    uses:
+      repositories: [wiki]
+```
+
+(declared, not checked out — the task writes through the Git API), or turn the
+setting off under **Project settings → Pipelines → Settings**. The first grants
+one repository to one pipeline and says so in the YAML; the second grants every
+repository to every pipeline in the project and leaves no trace. The page is only written when its content has changed, so a daily run does
+not bury the wiki revisions that mean something. One page per pipeline: two
+pointed at the same path will overwrite each other.
 
 **Teams** — `teamsWebhook` (or `TF_SNAG_TEAMS_WEBHOOK` in the step's `env`),
 `teamsNotify` (`new` / `findings` / `always`), `teamsContext`,

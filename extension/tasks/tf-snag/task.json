@@ -16,6 +16,7 @@
     { "name": "provenance", "displayName": "Provenance", "isExpanded": false },
     { "name": "publish", "displayName": "What to publish", "isExpanded": false },
     { "name": "workItems", "displayName": "Work items", "isExpanded": false },
+    { "name": "wiki", "displayName": "Exceptions register (wiki)", "isExpanded": false },
     { "name": "teams", "displayName": "Microsoft Teams", "isExpanded": false },
     { "name": "advanced", "displayName": "Advanced", "isExpanded": false }
   ],
@@ -235,6 +236,34 @@
       "groupName": "workItems",
       "visibleRule": "workItems = on",
       "helpMarkDown": "Defaults to whichever state the work item type files under **Completed** — `Closed` on Agile, `Done` on Scrum and Basic."
+    },
+
+    {
+      "name": "wikiPage",
+      "type": "string",
+      "label": "Wiki page path",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "wiki",
+      "helpMarkDown": "Publish the exceptions register to this wiki page, e.g. `/tf-snag/Exceptions` — every ignore rule, why it exists, what it currently suppresses, and which rules have stopped suppressing anything. Leave empty to publish nothing. Needs the project URL, so it uses the same **adoUrl** and **adoToken** as work items; set **Raise work items** to `off` to use them for the register alone. One page per pipeline: two pipelines pointed at the same path will overwrite each other."
+    },
+    {
+      "name": "wiki",
+      "type": "string",
+      "label": "Wiki",
+      "defaultValue": "",
+      "required": false,
+      "groupName": "wiki",
+      "helpMarkDown": "Wiki name or id. Defaults to the project wiki (`<project>.wiki`)."
+    },
+    {
+      "name": "wikiDryRun",
+      "type": "boolean",
+      "label": "Dry run",
+      "defaultValue": false,
+      "required": false,
+      "groupName": "wiki",
+      "helpMarkDown": "Print the page to the log and report what would change, without writing. Still reads the wiki, so it exercises the token and its wiki access — a PAT needs the **Wiki (Read & Write)** scope, and the `System.AccessToken` identity needs **Contribute** on the `<project>.wiki` repository, under Project settings > Repos > Repositories. Separate from work items either way."
     },
 
     {

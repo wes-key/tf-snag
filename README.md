@@ -426,6 +426,111 @@ a flag. Prefer `$TF_SNAG_ADO_TOKEN` so it never reaches a command line.
 anything. Worth doing on first adoption. All work-item output goes to stderr, so
 it never contaminates `-format json`/`sarif` on stdout.
 
+## Exceptions register (wiki)
+
+`-wiki-page` publishes a register of every ignore rule to an Azure DevOps wiki
+page — what is waived, why, where it is defined, and what it is currently
+suppressing:
+
+```
+tf-snag -check all -plan plan.json -plan-log plan.jsonl -baseline prev.sarif   -ado-url https://dev.azure.com/wes-key/tf-snag -wiki-page /tf-snag/Exceptions
+```
+
+Rules are split into two tables. **In effect** lists the ones suppressing a
+finding in this run, with how long that finding has been there (`-baseline`
+supplies the age; without one the column reads `—`). **Suppressing nothing**
+lists the rest — a waiver whose drift has since been fixed is a rule nobody
+needs and nobody will think to remove, and it is the whole reason the page is
+worth visiting.
+
+Inline rules are marked as such: an inline comment is reviewed with the
+Terraform it sits in, a file rule is reviewed on its own, and the register says
+which is which. A rule with no `reason` is flagged rather than left blank.
+
+**The page is generated.** Editing it is pointless — the next run replaces it.
+Edit the rules.
+
+**It only writes when something changed.** The page is read for its ETag
+regardless, so comparing is free, and a daily check that rewrites an identical
+page buries the revisions that mean something. The generated-at footer is
+excluded from that comparison, or every run would differ.
+
+**Which wiki.** Discovered, not assumed: tf-snag lists the project's wikis and
+picks the **project wiki**, or the only one when a project has a single code
+wiki. `-wiki` names one explicitly (by name or id) when there are several. A
+project with no wiki at all is reported as such rather than as a missing page —
+and note a project wiki's *name* is not `<project>.wiki`, that is only its
+backing repository, so nothing here constructs an identifier.
+
+**Flags.** `-wiki` names the wiki;
+`-wiki-dry-run` prints the page and reports what would happen without writing.
+`-wiki-page` needs `-ado-url` to say which project. All output goes to stderr,
+so it never contaminates `-format json`/`sarif` on stdout.
+
+**How it is written.** As a **commit to the wiki's Git repository**, not through
+the Wiki API. A wiki is a repository of markdown files and both routes reach the
+same pages, but they need different scopes: the Wiki API wants `vso.wiki_write`,
+which a pipeline's `System.AccessToken` does not appear to carry, while the Git
+API wants `vso.code_write`, which it plainly does — it clones the repository
+every run. Going through Git is what lets the build service publish without a PAT.
+
+**Permissions.** The build service needs **Contribute** on the wiki's repository:
+`<Project>.wiki` for a project wiki, or the repository it was published from for
+a code wiki. Grant it from the wiki's own **⋯ → Wiki security**, or under
+*Project settings → Repos → Repositories* when the wiki repo is listed there.
+
+**Naming it.** `-wiki` is the wiki's **repository**, and takes a name or an id.
+The name does not always resolve through the Git API; the repository id always
+does, and is worth pinning in a pipeline. tf-snag logs which repository and
+branch it is writing to.
+
+**The pipeline must reference the wiki repository.** This is the one that costs
+people a day. Azure DevOps has a setting — *Limit job authorization scope to
+referenced Azure DevOps repositories* — which, when on, scopes a job's token to
+only the repositories the pipeline names. The wiki is a *separate* repository, so
+unless it is referenced the token never reaches it, **whatever permissions the
+build service has been granted**: the scope is applied before any ACL is
+consulted. Two ways out.
+
+*Declare the repository in the calling pipeline* — least privilege, and visible
+to whoever reads the YAML next:
+
+```yaml
+resources:
+  repositories:
+    - repository: wiki
+      type: git
+      name: <Project>.wiki      # the wiki's repository
+
+jobs:
+  - job: drift
+    uses:
+      repositories: [wiki]      # brings it into this job's token scope
+    steps: ...
+```
+
+Declared, not checked out — `uses` grants the access, and tf-snag writes through
+the Git API rather than from a working copy.
+
+*Or turn the setting off* — **Project settings → Pipelines → Settings → Limit job
+authorization scope to referenced Azure DevOps repositories** (there is an
+organisation-level equivalent, which locks the project one when enforced). One
+toggle instead of four lines, but it restores that reach for **every pipeline in
+the project**, not just this one, and leaves nothing in the YAML to explain why
+the wiki suddenly works. Prefer the first unless you have a reason not to.
+
+**A permission problem does not look like one.** Azure DevOps hides what an
+identity cannot see rather than refusing it, so the failure arrives as a **404**
+rather than a 403 — as a missing wiki, repository or page rather than a missing
+permission. Comparing what you can see against what the pipeline can see is the
+quickest way to tell them apart.
+
+Work items are a separate scope, so an identity that raises items happily can
+still be refused here.
+
+Set `-ado-work-items=false` to use `-ado-url` purely as the project locator when
+you want the register without raising anything.
+
 ## Azure DevOps
 
 The [`extension/`](extension/) ships two pipeline tasks alongside the run tab, so
@@ -483,6 +588,7 @@ Where each lands on the run page:
 | **Summary** tab section | `markdown` + `task.uploadsummary` | `publishSummary` | nothing (built in) |
 | **Boards** | `-ado-url`, one work item per finding | `workItems` | a token with Work Items (Read & Write) — see [Work items](#work-items) |
 | **Teams** | Adaptive Card to a channel webhook | `teamsWebhook` | a Power Automate Workflows trigger — see [Microsoft Teams](#microsoft-teams) |
+| **Wiki** | exceptions register on a wiki page | — (`-wiki-page`) | a token with Wiki (Read & Write) — see [Exceptions register](#exceptions-register-wiki) |
 
 The tf-snag tab (schema 2) splits findings across a **Drift** / **Deprecations** /
 **Pending changes** pivot, each tab carrying its count, its own collapsed

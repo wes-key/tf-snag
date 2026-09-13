@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/wes-key/tf-snag/internal/report"
@@ -29,6 +30,11 @@ type Rule struct {
 	Src    string // ".tf-snag-ignore.yml" or "<tf-file>:<line>"
 	InSrc  bool
 
+	// id identifies one authored rule across both slices. A bare
+	// `# tf-snag:ignore` is filed under drift AND deprecations, and the
+	// exceptions register has to report that as one exception with two scopes
+	// rather than two rules that happen to look alike.
+	id   int
 	file string
 	line int
 }
@@ -37,18 +43,49 @@ type Rule struct {
 type Set struct {
 	drift []Rule
 	depr  []Rule
+
+	next int
+	// hits records what each rule actually suppressed, by rule id. Populated by
+	// Apply, read by Exceptions. A rule with no entry here matched nothing this
+	// run, which is the interesting case: the drift it was written for may be
+	// fixed and the rule can probably go.
+	hits map[int][]Hit
+}
+
+// Hit is one finding a rule suppressed.
+type Hit struct {
+	Kind    string // "drift" or "deprecation"
+	Address string // resource address, or the deprecation's summary
 }
 
 // Empty reports whether the set has no rules.
 func (s *Set) Empty() bool { return s == nil || (len(s.drift) == 0 && len(s.depr) == 0) }
 
-// Merge folds o's rules into s.
+// Merge folds o's rules into s, renumbering so ids stay unique across the merge
+// - the file set and the source set are built independently and both start at 0.
 func (s *Set) Merge(o *Set) {
 	if o == nil {
 		return
 	}
-	s.drift = append(s.drift, o.drift...)
-	s.depr = append(s.depr, o.depr...)
+	base := s.next
+	shift := func(rules []Rule) []Rule {
+		out := make([]Rule, len(rules))
+		for i, r := range rules {
+			r.id += base
+			out[i] = r
+		}
+		return out
+	}
+	s.drift = append(s.drift, shift(o.drift)...)
+	s.depr = append(s.depr, shift(o.depr)...)
+	s.next = base + o.next
+}
+
+// nextID hands out the identity for one authored rule.
+func (s *Set) nextID() int {
+	id := s.next
+	s.next++
+	return id
 }
 
 // --- YAML file ----------------------------------------------------------------
@@ -84,13 +121,13 @@ func LoadFile(path string) (*Set, error) {
 		if d.Address == "" {
 			continue
 		}
-		s.drift = append(s.drift, Rule{Addr: d.Address, Reason: d.Reason, Src: src})
+		s.drift = append(s.drift, Rule{Addr: d.Address, Reason: d.Reason, Src: src, id: s.nextID()})
 	}
 	for _, d := range fsc.Deprecations {
 		if d.Match == "" {
 			continue
 		}
-		s.depr = append(s.depr, Rule{Match: strings.ToLower(d.Match), Reason: d.Reason, Src: src})
+		s.depr = append(s.depr, Rule{Match: strings.ToLower(d.Match), Reason: d.Reason, Src: src, id: s.nextID()})
 	}
 	return s, nil
 }
@@ -200,6 +237,7 @@ func add(s *Set, resKey, file string, d directive) {
 		Reason: d.reason,
 		Src:    fmt.Sprintf("%s:%d", file, d.line),
 		InSrc:  true,
+		id:     s.nextID(),
 		file:   file,
 		line:   d.line,
 	}
@@ -225,13 +263,69 @@ func (s *Set) Apply(r *report.Report) {
 	for i := range r.Drift {
 		if rule, ok := s.matchDrift(r.Drift[i].Address); ok {
 			mark(&r.Drift[i].Suppressed, &r.Drift[i].SuppressReason, &r.Drift[i].SuppressSrc, &r.Drift[i].SuppressKind, rule)
+			s.record(rule, Hit{Kind: "drift", Address: r.Drift[i].Address})
 		}
 	}
 	for i := range r.Deprecations {
 		if rule, ok := s.matchDepr(&r.Deprecations[i]); ok {
 			mark(&r.Deprecations[i].Suppressed, &r.Deprecations[i].SuppressReason, &r.Deprecations[i].SuppressSrc, &r.Deprecations[i].SuppressKind, rule)
+			s.record(rule, Hit{Kind: "deprecation", Address: r.Deprecations[i].Summary})
 		}
 	}
+}
+
+func (s *Set) record(r Rule, h Hit) {
+	if s.hits == nil {
+		s.hits = map[int][]Hit{}
+	}
+	s.hits[r.id] = append(s.hits[r.id], h)
+}
+
+// Exception is one authored rule plus what it suppressed in the run Apply was
+// given. Scopes says which checks it covers; a bare `# tf-snag:ignore` covers
+// both, and is reported once rather than twice.
+type Exception struct {
+	Rule
+	Scopes []string // "drift" and/or "deprecation", in that order
+	Hits   []Hit
+}
+
+// Stale reports whether the rule suppressed nothing. Worth surfacing: the drift
+// it was written for may have been fixed, leaving a waiver nobody needs and
+// nobody will think to remove.
+func (e Exception) Stale() bool { return len(e.Hits) == 0 }
+
+// Exceptions returns every rule in the set, in the order they were authored,
+// with the findings each suppressed. Call it after Apply - before that, every
+// exception looks stale.
+func (s *Set) Exceptions() []Exception {
+	if s == nil {
+		return nil
+	}
+	byID := map[int]*Exception{}
+	var order []int
+	collect := func(rules []Rule, scope string) {
+		for _, r := range rules {
+			e, seen := byID[r.id]
+			if !seen {
+				e = &Exception{Rule: r}
+				byID[r.id] = e
+				order = append(order, r.id)
+			}
+			e.Scopes = append(e.Scopes, scope)
+		}
+	}
+	collect(s.drift, "drift")
+	collect(s.depr, "deprecation")
+
+	sort.Ints(order)
+	out := make([]Exception, 0, len(order))
+	for _, id := range order {
+		e := byID[id]
+		e.Hits = s.hits[id]
+		out = append(out, *e)
+	}
+	return out
 }
 
 func mark(sup *bool, reason, src, kind *string, r Rule) {
