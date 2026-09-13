@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<!--
+  tf-snag tab — local dev harness.
+
+  Renders the real tab/drift.css + tab/drift.js against a report file, with a
+  stubbed VSS host, so the tab can be worked on without publishing the extension
+  and re-running a pipeline.
+
+    cd extension && npm run tab:dev     ->  http://127.0.0.1:8730/
+
+  Deliberately NOT listed in vss-extension.json "files", so it never ships.
+
+  Two things it is for:
+
+    layout   expand rows, resize the window, watch the height the tab asks the
+             host for in the status bar. Making the window shorter than the
+             report is exactly what an Azure DevOps host that refuses to grow
+             the iframe looks like - the report should scroll, not clip.
+
+    real data  "Load a tf-snag.json" takes the attachment from an actual run
+             (download the `tf-snag` build artifact), so what a pipeline
+             produced can be looked at directly.
+-->
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>tf-snag tab (dev harness)</title>
+  <link rel="stylesheet" href="../tab/drift.css" />
+  <style>
+    /* The bar is the harness, not the tab. Fixed, so it never contributes to
+       the height the tab measures. */
+    #tfdev-bar {
+      position: fixed; z-index: 99; top: 0; left: 0; right: 0;
+      display: flex; gap: 12px; align-items: center;
+      padding: 6px 10px; box-sizing: border-box;
+      font: 12px/1.4 "Segoe UI", system-ui, sans-serif;
+      background: #2b2b3c; color: #e8e8f0; border-bottom: 1px solid #44445c;
+    }
+    #tfdev-bar strong { font-weight: 600; }
+    #tfdev-bar .sp { margin-left: auto; opacity: .75; font-variant-numeric: tabular-nums; }
+    #tfdev-bar button, #tfdev-bar label {
+      font: inherit; color: inherit; background: #3d3d52; border: 1px solid #55556e;
+      border-radius: 3px; padding: 2px 8px; cursor: pointer;
+    }
+    #tfdev-file { display: none; }
+    /* Push the tab below the bar without touching .tfd-content's own padding. */
+    #root { padding-top: 30px; }
+  </style>
+</head>
+<body>
+  <div id="tfdev-bar">
+    <strong>tf-snag tab — dev harness</strong>
+    <label for="tfdev-file">Load a tf-snag.json…</label>
+    <input type="file" id="tfdev-file" accept=".json,application/json" />
+    <button type="button" id="tfdev-sample">Use the sample</button>
+    <span class="sp" id="tfdev-status">loading…</span>
+  </div>
+
+  <div id="root" class="tfd-root">
+    <div class="tfd-content">
+      <p class="tfd-muted">Loading drift report&hellip;</p>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+
+      var STORE = "tfdev.report";
+      var status = document.getElementById("tfdev-status");
+
+      // A report chosen with the file picker is kept for the reload: drift.js
+      // renders once, on load, so swapping the data means starting the page
+      // again rather than re-invoking it.
+      document.getElementById("tfdev-file").addEventListener("change", function (e) {
+        var f = e.target.files && e.target.files[0];
+        if (!f) return;
+        var fr = new FileReader();
+        fr.onload = function () {
+          try {
+            JSON.parse(fr.result);
+          } catch (err) {
+            status.textContent = "not JSON: " + err.message;
+            return;
+          }
+          sessionStorage.setItem(STORE, fr.result);
+          location.reload();
+        };
+        fr.readAsText(f);
+      });
+
+      document.getElementById("tfdev-sample").addEventListener("click", function () {
+        sessionStorage.removeItem(STORE);
+        location.reload();
+      });
+
+      function boot(text, label) {
+        var build = {
+          id: 1,
+          buildNumber: "20260913.1",
+          // No repository, so the .tf source links stay inert here - they need a
+          // real Azure Repos / GitHub build to resolve.
+          repository: null
+        };
+        var client = {
+          getAttachments: function () {
+            return Promise.resolve([{
+              name: "tf-snag",
+              _links: { self: { href: "https://host/_apis/build/builds/1/TL/REC/attachments/tf-snag.report/tf-snag" } }
+            }]);
+          },
+          getAttachment: function () { return Promise.resolve(text); }
+        };
+
+        window.VSS = {
+          init: function () {},
+          ready: function (cb) { cb(); },
+          require: function (deps, cb) {
+            cb({ getCollectionClient: function () { return client; } }, { BuildHttpClient: {} });
+          },
+          getConfiguration: function () {
+            return { onBuildChanged: function (fn) { fn(build); } };
+          },
+          getWebContext: function () { return { project: { id: "dev" } }; },
+          notifyLoadSucceeded: function () {},
+          // The host is what would act on this. Reporting it is the point: it is
+          // the number the real tab sends, and the bug it hides is asking for a
+          // height the content has already outgrown.
+          resize: function (w, h) {
+            var root = document.getElementById("root");
+            var clipped = root && root.scrollHeight > root.clientHeight;
+            status.textContent = label + " · asks host for " + (h == null ? "?" : h) + "px" +
+              " · window " + window.innerHeight + "px" +
+              (clipped ? " · SCROLLING (host would be clipping)" : " · fits");
+          }
+        };
+
+        var s = document.createElement("script");
+        s.src = "../tab/drift.js";
+        document.body.appendChild(s);
+      }
+
+      var saved = sessionStorage.getItem(STORE);
+      if (saved) {
+        boot(saved, "your tf-snag.json");
+        return;
+      }
+      fetch("sample-report.json")
+        .then(function (r) {
+          if (!r.ok) throw new Error("sample-report.json: HTTP " + r.status);
+          return r.text();
+        })
+        .then(function (t) { boot(t, "sample"); })
+        .catch(function (err) {
+          status.textContent = err.message;
+          document.querySelector(".tfd-content").textContent =
+            "Could not load sample-report.json (" + err.message + "). Serve this page over HTTP: npm run tab:dev";
+        });
+    })();
+  </script>
+</body>
+</html>

@@ -54,8 +54,16 @@
     resize();
   }
 
+  // resize asks the host to re-fit the iframe. The height reported is the
+  // CONTENT's, not the body's: the body is pinned to the iframe so the report
+  // can scroll inside it, which would otherwise make the measurement circular -
+  // body.scrollHeight (what VSS.resize() uses by itself) would just hand back
+  // the height the iframe already has, and the tab could never grow.
   function resize() {
-    try { VSS.resize(); } catch (e) { /* no-op */ }
+    try {
+      var c = content();
+      VSS.resize(undefined, c ? c.offsetHeight : undefined);
+    } catch (e) { /* no-op */ }
   }
   window.addEventListener("resize", resize);
 
@@ -112,7 +120,21 @@
 
   // --- rendering ----------------------------------------------------------
 
-  function root() { return document.getElementById("root"); }
+  // #root is the scroll container; everything renders into .tfd-content inside
+  // it, which is the element whose height the host is told about. root() returns
+  // the content element so every caller stays as it was.
+  function content() {
+    var shell = document.getElementById("root");
+    if (!shell) return null;
+    var c = shell.querySelector(".tfd-content");
+    if (!c) {
+      c = el("div", { class: "tfd-content" });
+      shell.appendChild(c);
+    }
+    return c;
+  }
+
+  function root() { return content(); }
 
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
 

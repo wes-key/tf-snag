@@ -50,12 +50,27 @@
   }
 }
 
+/* The tab is an iframe the host sizes for us, from the height drift.js reports.
+   When the report is short the host grants it and .tfd-root is exactly as tall
+   as its content, so no scrollbar appears. When expanding rows pushes the
+   content past whatever ceiling the host is willing to give, the iframe stops
+   growing and .tfd-root - pinned to the iframe, not the content - scrolls
+   instead. Without this the overflow is simply clipped and the last findings
+   cannot be reached. No fixed maximum is assumed anywhere; the two just have to
+   be measured separately. */
+html, body { height: 100%; margin: 0; }
+
 .tfd-root {
+  height: 100%;
+  overflow-y: auto;
   font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  padding: 12px 16px 24px;
   background: var(--tfd-bg);
   color: var(--tfd-fg);
 }
+
+/* 20/24/32 = the old .tfd-root padding plus the body margin this file now zeroes
+   out, so the report sits where it always did. */
+.tfd-content { padding: 20px 24px 32px; }
 
 .tfd-muted { color: var(--tfd-muted); }
 
