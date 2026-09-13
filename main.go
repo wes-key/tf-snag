@@ -450,16 +450,9 @@ func publishExceptions(rep *report.Report, set *ignore.Set, cfg wikiConfig, stde
 		fmt.Fprintln(stderr, "tf-snag: no Azure DevOps token — set $TF_SNAG_ADO_TOKEN or -ado-token")
 		return 2
 	}
-	client := &ado.Client{OrgURL: orgURL, Project: project, Token: cfg.token}
-	// Resolved, not constructed: a project wiki's name is not derivable from the
-	// project name, and a project may have only code wikis, several, or none.
-	target, err := client.ResolveWiki(cfg.wiki)
-	if err != nil {
-		fmt.Fprintln(stderr, "tf-snag:", err)
-		return 2
-	}
-	fmt.Fprintln(stderr, "wiki: writing to "+target.Describe())
-
+	// Render before touching Azure DevOps. A dry run is for inspecting the page,
+	// and having to be able to reach the wiki before it will show you one makes
+	// it useless in exactly the situation you reach for it.
 	exs := set.Exceptions()
 	wiki.SortExceptions(exs)
 	page := wiki.Render(exs, rep, wiki.Options{Context: cfg.context, RunURL: cfg.runURL})
@@ -469,6 +462,14 @@ func publishExceptions(rep *report.Report, set *ignore.Set, cfg wikiConfig, stde
 		fmt.Fprint(stderr, page)
 		fmt.Fprintln(stderr, "-------------------------------")
 	}
+
+	client := &ado.Client{OrgURL: orgURL, Project: project, Token: cfg.token}
+	target, err := client.ResolveWiki(cfg.wiki)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	fmt.Fprintln(stderr, "wiki: writing to "+target.Describe())
 
 	if _, err := wiki.Publish(wiki.Client{Client: client}, target, cfg.page, page, cfg.dryRun, stderr); err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
