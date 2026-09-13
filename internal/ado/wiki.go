@@ -93,8 +93,14 @@ func (c *Client) ResolveWiki(want string) (Wiki, error) {
 		return Wiki{}, err
 	}
 	if len(all) == 0 {
-		return Wiki{}, fmt.Errorf("ado: project %s has no wiki — create one (Overview > Wiki) "+
-			"or publish a code wiki from a repository, then try again", c.Project)
+		// An empty list is not proof there is no wiki. Azure DevOps filters out
+		// what the caller cannot see rather than refusing, and answers a write to
+		// an invisible wiki with 404 rather than 403 — so "none" and "none you
+		// are allowed to see" are indistinguishable here, and saying only the
+		// first sends people off to create a wiki they already have.
+		return Wiki{}, fmt.Errorf("ado: no wiki visible to this identity in project %s — either the project "+
+			"has no wiki (create one: Overview > Wiki), or the identity cannot read it (Project settings > "+
+			"Repos > Repositories > the wiki's repo > Security: grant Read, and Contribute to write)", c.Project)
 	}
 
 	if want != "" {

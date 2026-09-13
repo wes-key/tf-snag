@@ -74,16 +74,25 @@ func TestResolveWikiByNameOrID(t *testing.T) {
 
 // The failure modes are the point: each should say what to do next.
 func TestResolveWikiErrorsAreActionable(t *testing.T) {
+	// An empty list means "none visible", which is also what a permission problem
+	// looks like - the message has to offer both or it sends people to create a
+	// wiki they already have.
 	none, _ := wikisServer(t, nil)
-	if _, err := none.ResolveWiki(""); err == nil || !strings.Contains(err.Error(), "has no wiki") {
-		t.Errorf("no wikis: %v", err)
+	_, err := none.ResolveWiki("")
+	if err == nil {
+		t.Fatal("empty wiki list should be an error")
+	}
+	for _, want := range []string{"no wiki visible", "create one", "cannot read it"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("message missing %q: %v", want, err)
+		}
 	}
 
 	ambiguous, _ := wikisServer(t, []map[string]any{
 		{"id": "a-1", "name": "Alpha", "type": CodeWiki},
 		{"id": "b-2", "name": "Beta", "type": CodeWiki},
 	})
-	_, err := ambiguous.ResolveWiki("")
+	_, err = ambiguous.ResolveWiki("")
 	if err == nil || !strings.Contains(err.Error(), "Alpha, Beta") {
 		t.Errorf("ambiguous should list the choices, got: %v", err)
 	}
