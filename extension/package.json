@@ -6,6 +6,7 @@
   "scripts": {
     "logo": "go run ./tools/genlogo/main.go",
     "stamp": "node tools/stamp-tasks.js",
+    "tab:dev": "node tools/tabserver.js",
     "package": "tfx extension create --manifest-globs vss-extension.json --output-path dist",
     "package:dev": "tfx extension create --manifest-globs vss-extension.json --overrides-file configs/dev.json --output-path dist",
     "publish": "tfx extension publish --manifest-globs vss-extension.json",

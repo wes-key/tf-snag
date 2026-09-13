@@ -130,6 +130,32 @@ publishing.
 needs a real build attachment and the `VSS` host). For quick DOM/CSS work, open
 `tab/drift.html` with a stubbed `VSS` object and a sample `tf-snag.json`.
 
+### The tab
+
+`dev/` is a harness that renders the real `tab/drift.css` + `tab/drift.js`
+against a report file, with a stubbed `VSS` host — no publish, no pipeline run:
+
+```
+npm run tab:dev        # -> http://127.0.0.1:8730/
+```
+
+It opens on `dev/sample-report.json`, which carries every state the tab can
+render: *no longer ignored*, *new*, long-standing findings with an age, an
+ignored group, a work-item link, and each change action. **Load a tf-snag.json…**
+swaps in the attachment from a real run — download the `tf-snag` build artifact
+and point it at that — which is the quickest way to tell a data problem from a
+rendering one.
+
+The status bar shows the height the tab is asking the host for against the
+window it actually has. Making the window shorter than the report is exactly
+what an Azure DevOps host that will not grow the iframe looks like: the report
+must scroll, not clip.
+
+`dev/` is deliberately absent from `vss-extension.json` "files", so it is never
+packaged.
+
+### The tasks
+
 The tasks are testable off an agent: they read their inputs from `INPUT_<NAME>`
 environment variables and write logging commands to stdout, so
 
