@@ -199,7 +199,10 @@ func (c *Client) Put(w Wiki, path, content, etag string) (created bool, err erro
 		return created, err // top-level page: the 404 is about the wiki, not the path
 	}
 	if perr := c.createParents(w, parents); perr != nil {
-		return created, err // report the original failure, not a symptom of it
+		// Both, because they mean different things: if the parent write failed
+		// the same way, the path was never the problem and the wiki itself is
+		// unreachable. Reporting only the original hides that.
+		return created, fmt.Errorf("%w (creating parent page %s also failed: %v)", err, parents[len(parents)-1], perr)
 	}
 	_, err = c.putPage(w, path, content, "")
 	return created, err
