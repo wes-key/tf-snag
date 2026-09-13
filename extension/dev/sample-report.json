@@ -1,0 +1,394 @@
+{
+ "schema": 2,
+ "terraform_version": "1.9.6",
+ "drift": [
+  {
+   "address": "azurerm_storage_account.data",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-21T14:44:58Z",
+   "unsuppressed": true
+  },
+  {
+   "address": "azurerm_key_vault.secrets",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "new",
+   "first_seen": "2026-09-13T14:44:58Z",
+   "work_item": 1234,
+   "work_item_url": "https://dev.azure.com/wes-key/tf-snag/_workitems/edit/1234"
+  },
+  {
+   "address": "azurerm_app_service.api",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-07-14T14:44:58Z"
+  },
+  {
+   "address": "azurerm_subnet.legacy",
+   "type": "azurerm_storage_account",
+   "action": "delete",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-09-04T14:44:58Z",
+   "module": "module.network"
+  },
+  {
+   "address": "azurerm_public_ip.edge",
+   "type": "azurerm_storage_account",
+   "action": "replace",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "new",
+   "first_seen": "2026-09-13T14:44:58Z"
+  },
+  {
+   "address": "azurerm_storage_account.logs",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-30T14:44:58Z",
+   "suppressed": true,
+   "suppress_reason": "temp tag from deploy script - JIRA-123",
+   "suppress_source": ".tf-snag-ignore.yml"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_1",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-13T14:44:58Z"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_2",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-12T14:44:58Z"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_3",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-11T14:44:58Z"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_4",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-10T14:44:58Z"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_5",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-09T14:44:58Z"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_6",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-08T14:44:58Z"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_7",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-07T14:44:58Z"
+  },
+  {
+   "address": "azurerm_linux_web_app.worker_8",
+   "type": "azurerm_storage_account",
+   "action": "update",
+   "attributes": [
+    {
+     "path": "allow_nested_items_to_be_public",
+     "old": false,
+     "new": true
+    },
+    {
+     "path": "min_tls_version",
+     "old": "TLS1_2",
+     "new": "TLS1_0"
+    },
+    {
+     "path": "tags.temp",
+     "old": null,
+     "new": "true"
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-08-06T14:44:58Z"
+  }
+ ],
+ "pending": [
+  {
+   "address": "azurerm_resource_group.new",
+   "action": "create"
+  },
+  {
+   "address": "module.network.azurerm_subnet.legacy",
+   "module": "module.network",
+   "action": "delete"
+  }
+ ],
+ "deprecations": [
+  {
+   "severity": "warning",
+   "summary": "Deprecated attribute",
+   "detail": "The attribute \"bar\" is deprecated.",
+   "sites": [
+    {
+     "address": "azurerm_p.q",
+     "file": "main.tf",
+     "line": 5
+    }
+   ],
+   "suppressed": true,
+   "suppress_reason": "4.0 upgrade in backlog",
+   "suppress_source": "main.tf:7",
+   "baseline_state": "updated",
+   "first_seen": "2026-09-13T14:44:29Z"
+  },
+  {
+   "severity": "warning",
+   "summary": "Argument is deprecated",
+   "detail": "The \"foo\" argument is deprecated. Use \"bar\" instead.",
+   "sites": [
+    {
+     "address": "module.a.azurerm_x.y",
+     "file": "modules/a/main.tf",
+     "line": 12
+    }
+   ],
+   "baseline_state": "updated",
+   "first_seen": "2026-09-13T14:44:29Z",
+   "unsuppressed": true
+  }
+ ]
+}

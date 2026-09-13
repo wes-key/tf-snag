@@ -8,8 +8,13 @@
   <link rel="stylesheet" href="drift.css" />
 </head>
 <body>
+  <!-- #root is the scroll container and fills the iframe; .tfd-content holds the
+       report and is what gets measured. Keeping the two apart is what lets the
+       tab grow when the host allows it and scroll when it does not. -->
   <div id="root" class="tfd-root">
-    <p class="tfd-muted">Loading drift report&hellip;</p>
+    <div class="tfd-content">
+      <p class="tfd-muted">Loading drift report&hellip;</p>
+    </div>
   </div>
   <script src="drift.js"></script>
 </body>
