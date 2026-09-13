@@ -214,38 +214,60 @@ function readInputs() {
 
   cfg.onDrift = vso.pickInput("onDrift", ["warning", "failure", "none"], "warning");
 
-  readWorkItemInputs(cfg);
+  readAzureDevOpsInputs(cfg);
   return cfg;
 }
 
-function readWorkItemInputs(cfg) {
+// readAzureDevOpsInputs builds the flags for both Azure DevOps surfaces. They
+// share a project URL and a token, and both ride on the one JSON invocation, so
+// resolving them together is what keeps a single missing token from being
+// reported twice - or worse, reported for one and silently skipped for the other.
+function readAzureDevOpsInputs(cfg) {
   cfg.adoArgs = [];
   cfg.adoToken = vso.input("adoToken") || (vso.isSet(process.env.TF_SNAG_ADO_TOKEN) ? process.env.TF_SNAG_ADO_TOKEN : "");
 
   var mode = vso.pickInput("workItems", ["off", "dry-run", "on"], "off");
-  if (mode === "off") return;
+  var wikiPage = vso.input("wikiPage");
+  var wants = [];
+  if (mode !== "off") wants.push("workItems is " + mode);
+  if (wikiPage) wants.push("wikiPage is set");
+  if (!wants.length) return;
 
   var url = vso.input("adoUrl") || defaultProjectURL();
   if (!url) {
-    throw new vso.TaskError("workItems is " + mode + " but no adoUrl could be worked out for this project");
+    throw new vso.TaskError(wants.join(" and ") + " but no adoUrl could be worked out for this project");
   }
   // System.AccessToken arrives as an unexpanded macro when the job has no OAuth
   // token. Saying so beats letting tf-snag fail on the sign-in page Azure DevOps
   // answers an unauthenticated call with.
   if (!cfg.adoToken) {
-    vso.logIssue("warning", "workItems is " + mode + " but no adoToken is available - skipping work items");
+    vso.logIssue("warning", wants.join(" and ") + " but no adoToken is available - skipping both");
     return;
   }
 
-  cfg.adoArgs = ["-ado-url", url, "-ado-type", vso.input("adoType") || "Task",
-    "-ado-raise", vso.pickInput("adoRaise", ["new", "findings"], "new")];
-  var area = vso.input("adoArea");
-  if (area) cfg.adoArgs.push("-ado-area", area);
-  if (mode === "dry-run") {
-    cfg.adoArgs.push("-ado-dry-run");
-  } else if (vso.boolInput("adoClose", true)) {
-    cfg.adoArgs.push("-ado-close");
-    if (vso.input("adoClosedState")) cfg.adoArgs.push("-ado-closed-state", vso.input("adoClosedState"));
+  cfg.adoArgs = ["-ado-url", url];
+
+  if (mode === "off") {
+    // -ado-url doubles as "raise work items", so the wiki alone has to say no.
+    cfg.adoArgs.push("-ado-work-items=false");
+  } else {
+    cfg.adoArgs.push("-ado-type", vso.input("adoType") || "Task",
+      "-ado-raise", vso.pickInput("adoRaise", ["new", "findings"], "new"));
+    var area = vso.input("adoArea");
+    if (area) cfg.adoArgs.push("-ado-area", area);
+    if (mode === "dry-run") {
+      cfg.adoArgs.push("-ado-dry-run");
+    } else if (vso.boolInput("adoClose", true)) {
+      cfg.adoArgs.push("-ado-close");
+      if (vso.input("adoClosedState")) cfg.adoArgs.push("-ado-closed-state", vso.input("adoClosedState"));
+    }
+  }
+
+  if (wikiPage) {
+    cfg.adoArgs.push("-wiki-page", wikiPage);
+    var wikiName = vso.input("wiki");
+    if (wikiName) cfg.adoArgs.push("-wiki", wikiName);
+    if (vso.boolInput("wikiDryRun", false)) cfg.adoArgs.push("-wiki-dry-run");
   }
 }
 

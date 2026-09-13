@@ -426,6 +426,45 @@ a flag. Prefer `$TF_SNAG_ADO_TOKEN` so it never reaches a command line.
 anything. Worth doing on first adoption. All work-item output goes to stderr, so
 it never contaminates `-format json`/`sarif` on stdout.
 
+## Exceptions register (wiki)
+
+`-wiki-page` publishes a register of every ignore rule to an Azure DevOps wiki
+page — what is waived, why, where it is defined, and what it is currently
+suppressing:
+
+```
+tf-snag -check all -plan plan.json -plan-log plan.jsonl -baseline prev.sarif   -ado-url https://dev.azure.com/wes-key/tf-snag -wiki-page /tf-snag/Exceptions
+```
+
+Rules are split into two tables. **In effect** lists the ones suppressing a
+finding in this run, with how long that finding has been there (`-baseline`
+supplies the age; without one the column reads `—`). **Suppressing nothing**
+lists the rest — a waiver whose drift has since been fixed is a rule nobody
+needs and nobody will think to remove, and it is the whole reason the page is
+worth visiting.
+
+Inline rules are marked as such: an inline comment is reviewed with the
+Terraform it sits in, a file rule is reviewed on its own, and the register says
+which is which. A rule with no `reason` is flagged rather than left blank.
+
+**The page is generated.** Editing it is pointless — the next run replaces it.
+Edit the rules.
+
+**It only writes when something changed.** The page is read for its ETag
+regardless, so comparing is free, and a daily check that rewrites an identical
+page buries the revisions that mean something. The generated-at footer is
+excluded from that comparison, or every run would differ.
+
+**Flags.** `-wiki` names the wiki (default: the project wiki, `<project>.wiki`);
+`-wiki-dry-run` prints the page and reports what would happen without writing.
+`-wiki-page` needs `-ado-url` to say which project. All output goes to stderr,
+so it never contaminates `-format json`/`sarif` on stdout.
+
+**Permissions.** The token needs **Wiki (Read & Write)** — a different scope from
+work items, so a token that raises items happily can still be refused here. Set
+`-ado-work-items=false` to use `-ado-url` purely as the project locator when you
+want the register without raising anything.
+
 ## Azure DevOps
 
 The [`extension/`](extension/) ships two pipeline tasks alongside the run tab, so
@@ -483,6 +522,7 @@ Where each lands on the run page:
 | **Summary** tab section | `markdown` + `task.uploadsummary` | `publishSummary` | nothing (built in) |
 | **Boards** | `-ado-url`, one work item per finding | `workItems` | a token with Work Items (Read & Write) — see [Work items](#work-items) |
 | **Teams** | Adaptive Card to a channel webhook | `teamsWebhook` | a Power Automate Workflows trigger — see [Microsoft Teams](#microsoft-teams) |
+| **Wiki** | exceptions register on a wiki page | — (`-wiki-page`) | a token with Wiki (Read & Write) — see [Exceptions register](#exceptions-register-wiki) |
 
 The tf-snag tab (schema 2) splits findings across a **Drift** / **Deprecations** /
 **Pending changes** pivot, each tab carrying its count, its own collapsed

@@ -176,6 +176,7 @@ log at `plan.jsonl`, and that you want the tab.
 | `publishAttachment` | `true` | the **tf-snag** tab (a run attachment of type `tf-snag.report`) |
 | `publishSummary` | `false` | a section on the run's **Summary** tab. Needs nothing installed |
 | `publishScansTab` | `false` | the SARIF as a `CodeAnalysisLogs` artifact. Needs the *SARIF SAST Scans Tab* extension in the org |
+| `wikiPage` | — | the exceptions register on a wiki page — see below |
 
 **Work items** — `workItems` is `off`, `dry-run` or `on`. Start on `dry-run`: it
 exercises auth, the dedup query and the permission pre-check without writing
@@ -188,6 +189,20 @@ Using the pipeline's own identity needs the *&lt;Project&gt; Build Service*
 account to have **Edit work items in this node** on the area path. Without a
 usable token the task logs a warning and skips work items rather than failing on
 the sign-in page Azure DevOps answers an unauthenticated call with.
+
+**Exceptions register** — `wikiPage` publishes a register of every ignore rule to
+an Azure DevOps wiki page: what is waived, why, where it is defined, and what it
+currently suppresses. Rules that have stopped suppressing anything get their own
+table — a waiver whose drift was fixed is one nobody needs and nobody will think
+to remove. `wiki` names the wiki (default: the project wiki), `wikiDryRun` prints
+the page without writing.
+
+It shares `adoUrl` and `adoToken` with work items, so set `workItems: off` to use
+them for the register alone. The token needs **Wiki (Read & Write)** on top of
+Work Items — a different scope, so one that raises items can still be refused
+here. The page is only written when its content has changed, so a daily run does
+not bury the wiki revisions that mean something. One page per pipeline: two
+pointed at the same path will overwrite each other.
 
 **Teams** — `teamsWebhook` (or `TF_SNAG_TEAMS_WEBHOOK` in the step's `env`),
 `teamsNotify` (`new` / `findings` / `always`), `teamsContext`,

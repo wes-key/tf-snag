@@ -111,56 +111,89 @@ func (c *Client) authHeader() string {
 
 // do issues one request and decodes a JSON response into out (which may be nil).
 func (c *Client) do(method, endpoint string, body any, contentType string, out any) error {
+	_, err := c.doWith(reqOpts{
+		method: method, endpoint: endpoint, body: body, contentType: contentType, out: out,
+	})
+	return err
+}
+
+// reqOpts is the full shape of a request. do covers the work item calls; the
+// wiki needs request headers (If-Match), the response headers (the ETag it will
+// send back next time) and a 404 that is an answer rather than a failure.
+type reqOpts struct {
+	method      string
+	endpoint    string
+	body        any
+	contentType string
+	out         any
+	headers     map[string]string
+	// needs names the permission a 403 is complaining about. Defaults to the
+	// work item scope, which is what nearly every call here wants.
+	needs string
+	// allow404 returns the status instead of an error, for "does this exist?".
+	allow404 bool
+}
+
+func (c *Client) doWith(o reqOpts) (*http.Response, error) {
 	var rdr io.Reader
-	if body != nil {
-		raw, err := json.Marshal(body)
+	if o.body != nil {
+		raw, err := json.Marshal(o.body)
 		if err != nil {
-			return fmt.Errorf("ado: encoding request: %w", err)
+			return nil, fmt.Errorf("ado: encoding request: %w", err)
 		}
 		rdr = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, endpoint, rdr)
+	req, err := http.NewRequest(o.method, o.endpoint, rdr)
 	if err != nil {
-		return fmt.Errorf("ado: building request: %w", err)
+		return nil, fmt.Errorf("ado: building request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", c.authHeader())
-	if contentType != "" {
-		req.Header.Set("Content-Type", contentType)
+	if o.contentType != "" {
+		req.Header.Set("Content-Type", o.contentType)
+	}
+	for k, v := range o.headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return fmt.Errorf("ado: %s: %w", describe(method, endpoint), err)
+		return nil, fmt.Errorf("ado: %s: %w", describe(o.method, o.endpoint), err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 
-	if err := checkStatus(resp, raw, method, endpoint); err != nil {
-		return err
+	if o.allow404 && resp.StatusCode == http.StatusNotFound {
+		return resp, nil
 	}
-	if out == nil {
-		return nil
+	if err := checkStatus(resp, raw, o.method, o.endpoint, o.needs); err != nil {
+		return resp, err
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("ado: decoding %s response: %w", describe(method, endpoint), err)
+	if o.out == nil {
+		return resp, nil
 	}
-	return nil
+	if err := json.Unmarshal(raw, o.out); err != nil {
+		return resp, fmt.Errorf("ado: decoding %s response: %w", describe(o.method, o.endpoint), err)
+	}
+	return resp, nil
 }
 
 // checkStatus turns a non-2xx into an error that says what to do about it.
 // Azure DevOps answers an unauthenticated API call with 203 and an HTML sign-in
 // page rather than 401, which is otherwise a baffling failure to debug.
-func checkStatus(resp *http.Response, body []byte, method, endpoint string) error {
+func checkStatus(resp *http.Response, body []byte, method, endpoint, needs string) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.StatusCode != http.StatusNonAuthoritativeInfo {
 		return nil
+	}
+	if needs == "" {
+		needs = "Work Items (Read & Write)"
 	}
 	switch resp.StatusCode {
 	case http.StatusNonAuthoritativeInfo, http.StatusUnauthorized:
 		return fmt.Errorf("ado: not authenticated (%s) — check the token is valid and not expired", resp.Status)
 	case http.StatusForbidden:
-		return fmt.Errorf("ado: token lacks permission for %s (%s) — it needs Work Items (Read & Write)",
-			describe(method, endpoint), resp.Status)
+		return fmt.Errorf("ado: token lacks permission for %s (%s) — it needs %s",
+			describe(method, endpoint), resp.Status, needs)
 	case http.StatusNotFound:
 		return fmt.Errorf("ado: %s returned %s — check the organisation, project and work item type exist",
 			describe(method, endpoint), resp.Status)

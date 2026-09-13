@@ -25,6 +25,7 @@ import (
 	"github.com/wes-key/tf-snag/internal/plan"
 	"github.com/wes-key/tf-snag/internal/report"
 	"github.com/wes-key/tf-snag/internal/teams"
+	"github.com/wes-key/tf-snag/internal/wiki"
 )
 
 // version is stamped by the build with -ldflags "-X main.version=<v>" (see
@@ -145,7 +146,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	adoRaise := fs.String("ado-raise", "new", "which findings get a work item: `new` (absent from -baseline) or findings (anything un-suppressed)")
 	adoClose := fs.Bool("ado-close", false, "close work items whose finding is no longer reported")
 	adoClosedState := fs.String("ado-closed-state", "", "`state` to move a resolved finding's work item to; default: the work item type's own completed state (Closed on Agile, Done on Scrum and Basic)")
+	adoWorkItems := fs.Bool("ado-work-items", true, "raise work items when -ado-url is set. Turn off to use -ado-url purely as the project locator, e.g. for -wiki-page alone")
 	adoDryRun := fs.Bool("ado-dry-run", false, "report the work items that would be raised or closed, without changing anything")
+	wikiPage := fs.String("wiki-page", "", "Azure DevOps wiki `path` to publish the exceptions register to, e.g. /tf-snag/Exceptions; needs -ado-url")
+	wikiName := fs.String("wiki", "", "wiki `name` or id to write to (default: the project wiki, <project>.wiki)")
+	wikiDryRun := fs.Bool("wiki-dry-run", false, "report what would be written to the wiki, and print the page, without changing anything")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		writeWordmark(stderr, bannerColor(*color, stderr))
@@ -203,8 +208,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 
 	// -baseline applies with any format when a card is being posted: it is what
 	// marks findings new, and what -teams-notify new gates on.
-	if *baseline != "" && *format != "sarif" && *format != "json" && *format != "teams" && hook == "" {
-		fmt.Fprintln(stderr, "tf-snag: -baseline applies to -format sarif, json or teams, or when posting to Teams")
+	// -wiki-page is a baseline consumer too: the register reports how long each
+	// waived finding has been there, which is provenance the baseline carries.
+	if *baseline != "" && *format != "sarif" && *format != "json" && *format != "teams" && hook == "" && *wikiPage == "" {
+		fmt.Fprintln(stderr, "tf-snag: -baseline applies to -format sarif, json or teams, or when posting to Teams or publishing -wiki-page")
+		return 2
+	}
+	if *wikiPage != "" && *adoURL == "" {
+		fmt.Fprintln(stderr, "tf-snag: -wiki-page needs -ado-url to say which project's wiki to write to")
 		return 2
 	}
 	if *planPath != "" && !driftOn {
@@ -275,7 +286,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		rep.Deprecations = report.Deprecations(diags)
 	}
 
-	if code := applyIgnores(rep, *ignorePath, *source, stderr); code != 0 {
+	ignoreSet, code := applyIgnores(rep, *ignorePath, *source, stderr)
+	if code != 0 {
 		return code
 	}
 
@@ -308,7 +320,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		rep.AttachSourceLocations(srcIndex)
 	}
 
-	if *adoURL != "" {
+	if *adoURL != "" && *adoWorkItems {
 		cfg := adoConfig{
 			url:         *adoURL,
 			token:       firstNonEmpty(*adoToken, os.Getenv("TF_SNAG_ADO_TOKEN")),
@@ -322,6 +334,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			context:     *teamsContext,
 		}
 		if code := syncWorkItems(rep, cfg, stderr); code != 0 {
+			return code
+		}
+	}
+
+	if *wikiPage != "" {
+		cfg := wikiConfig{
+			url:     *adoURL,
+			token:   firstNonEmpty(*adoToken, os.Getenv("TF_SNAG_ADO_TOKEN")),
+			wiki:    *wikiName,
+			page:    *wikiPage,
+			dryRun:  *wikiDryRun,
+			runURL:  *runURL,
+			context: *teamsContext,
+		}
+		if code := publishExceptions(rep, ignoreSet, cfg, stderr); code != 0 {
 			return code
 		}
 	}
@@ -367,7 +394,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // applyIgnores loads the ignore file (explicit -ignore, else an auto-discovered
 // .tf-snag-ignore.yml) and inline .tf comments (when -source is set), and marks
 // matching findings suppressed. Returns a non-zero exit code on a hard error.
-func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Writer) int {
+func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Writer) (*ignore.Set, int) {
 	set := &ignore.Set{}
 
 	path := ignorePath
@@ -377,7 +404,7 @@ func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Write
 	s, err := ignore.LoadFile(path)
 	if err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
-		return 2
+		return nil, 2
 	}
 	set.Merge(s)
 
@@ -385,16 +412,63 @@ func applyIgnores(rep *report.Report, ignorePath, source string, stderr io.Write
 		s, err := ignore.FromSource(source)
 		if err != nil {
 			fmt.Fprintln(stderr, "tf-snag:", err)
-			return 2
+			return nil, 2
 		}
 		set.Merge(s)
 	}
 
 	set.Apply(rep)
-	return 0
+	return set, 0
 }
 
 // adoConfig is the resolved -ado-* configuration for one run.
+type wikiConfig struct {
+	url, token      string
+	wiki, page      string
+	dryRun          bool
+	runURL, context string
+}
+
+// publishExceptions renders the exceptions register — every ignore rule, what it
+// currently suppresses, and which ones have stopped suppressing anything — and
+// writes it to an Azure DevOps wiki page.
+//
+// Runs after the baseline has been stamped, so the register can say how long the
+// estate has been carrying each waived finding. All output goes to stderr: the
+// report owns stdout.
+func publishExceptions(rep *report.Report, set *ignore.Set, cfg wikiConfig, stderr io.Writer) int {
+	orgURL, project, err := ado.ParseURL(cfg.url)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	if cfg.token == "" {
+		fmt.Fprintln(stderr, "tf-snag: no Azure DevOps token — set $TF_SNAG_ADO_TOKEN or -ado-token")
+		return 2
+	}
+	wikiID := cfg.wiki
+	if wikiID == "" {
+		wikiID = ado.DefaultWiki(project)
+	}
+
+	exs := set.Exceptions()
+	wiki.SortExceptions(exs)
+	page := wiki.Render(exs, rep, wiki.Options{Context: cfg.context, RunURL: cfg.runURL})
+
+	if cfg.dryRun {
+		fmt.Fprintln(stderr, "----- wiki page (dry run) -----")
+		fmt.Fprint(stderr, page)
+		fmt.Fprintln(stderr, "-------------------------------")
+	}
+
+	client := wiki.Client{Client: &ado.Client{OrgURL: orgURL, Project: project, Token: cfg.token}}
+	if _, err := wiki.Publish(client, wikiID, cfg.page, page, cfg.dryRun, stderr); err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	return 0
+}
+
 type adoConfig struct {
 	url, token      string
 	itemType, area  string
