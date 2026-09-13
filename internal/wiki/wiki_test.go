@@ -42,10 +42,10 @@ func TestRenderSplitsLiveFromStale(t *testing.T) {
 
 	got := Render(exs, rep, Options{Now: at("2026-09-13T06:00:00Z")})
 
-	if !strings.Contains(got, "**2 exceptions** · 1 in effect · **1 suppressing nothing**") {
+	if !strings.Contains(got, "**2 exceptions** · 1 in effect ·") || !strings.Contains(got, "**1 suppressing nothing**") {
 		t.Errorf("summary line wrong:\n%s", got)
 	}
-	live, stale, ok := strings.Cut(got, "## Suppressing nothing")
+	live, stale, ok := strings.Cut(got, "Suppressing nothing")
 	if !ok {
 		t.Fatalf("no stale section:\n%s", got)
 	}
@@ -59,7 +59,7 @@ func TestRenderSplitsLiveFromStale(t *testing.T) {
 		t.Error("unmatched rule missing from the stale table")
 	}
 	// The age is the point of the column: how long the estate has carried it.
-	if !strings.Contains(live, "2026-08-21 (23 days)") {
+	if !strings.Contains(live, "2026-08-21 · 23 days") {
 		t.Errorf("first-seen age missing or wrong:\n%s", live)
 	}
 	if !strings.Contains(live, "(inline)") {
@@ -72,7 +72,7 @@ func TestRenderNoRules(t *testing.T) {
 	if !strings.Contains(got, "_No ignore rules are defined._") {
 		t.Errorf("empty register should say so:\n%s", got)
 	}
-	if strings.Contains(got, "## Suppressing nothing") {
+	if strings.Contains(got, "Suppressing nothing") {
 		t.Error("no rules means no stale section")
 	}
 }
@@ -188,5 +188,35 @@ func TestPublishDryRunWritesNothing(t *testing.T) {
 	}
 	if !strings.Contains(log.String(), "would be updating") {
 		t.Errorf("log = %q", log.String())
+	}
+}
+
+// The icons are there to carry a judgement, so the thresholds are worth pinning:
+// a waiver that has been in place for months should say so without being read
+// for.
+func TestRenderFlagsLongStandingWaivers(t *testing.T) {
+	now := at("2026-09-13T06:00:00Z")
+	recent := exception("azurerm_a.b", "", "r", "a.tf:1", true, []string{"drift"},
+		ignore.Hit{Kind: "drift", Address: "azurerm_a.b"})
+	old := exception("azurerm_c.d", "", "r", "a.tf:2", true, []string{"drift"},
+		ignore.Hit{Kind: "drift", Address: "azurerm_c.d"})
+
+	rep := &report.Report{Drift: []report.ResourceReport{
+		{Address: "azurerm_a.b", FirstSeen: "2026-09-01T06:00:00Z"}, // 12 days
+		{Address: "azurerm_c.d", FirstSeen: "2025-09-01T06:00:00Z"}, // over a year
+	}}
+
+	got := Render([]ignore.Exception{recent, old}, rep, Options{Now: now})
+	for _, line := range strings.Split(got, "\n") {
+		switch {
+		case strings.Contains(line, "azurerm_a.b"):
+			if strings.Contains(line, iconLongStanding) {
+				t.Errorf("a 12-day-old waiver should not be flagged: %s", line)
+			}
+		case strings.Contains(line, "azurerm_c.d"):
+			if !strings.Contains(line, iconLongStanding) {
+				t.Errorf("a year-old waiver should be flagged: %s", line)
+			}
+		}
 	}
 }

@@ -16,6 +16,25 @@ import (
 	"github.com/wes-key/tf-snag/internal/report"
 )
 
+// The page's entire icon vocabulary. Deliberately small, and each one earns its
+// place by carrying a judgement the reader would otherwise have to make: this
+// needs attention, this has been waived a long time, nobody said why. Decoration
+// that means nothing is noise, and a wiki full of it stops being read.
+//
+// Emoji rather than colour because an Azure DevOps wiki gives no way to tint a
+// table cell — these are the only coloured glyphs available in markdown it will
+// render consistently.
+const (
+	iconLive         = "🔇"  // in effect: actively silencing a finding
+	iconStale        = "🧹"  // suppressing nothing: a waiver to sweep up
+	iconUnexplained  = "⚠️" // no reason given
+	iconLongStanding = "⏳"  // waived for longer than longStanding
+)
+
+// longStanding is when a waiver stops being a decision and starts being
+// furniture. Nothing enforces it; the page just says so.
+const longStanding = 90 * 24 * time.Hour
+
 // Options carries the run's identity, so a reader can tell how current the page
 // is and which pipeline wrote it.
 type Options struct {
@@ -45,9 +64,12 @@ func Render(exs []ignore.Exception, rep *report.Report, o Options) string {
 
 	var b strings.Builder
 	b.WriteString("# tf-snag exceptions\n\n")
-	b.WriteString(summary(len(exs), len(live), len(stale)))
-	b.WriteString("\n\n")
-	b.WriteString("Findings listed here are still detected and still reported — they are taken off\nthe exit-code gate, not hidden. This page is generated; edit the rules, not the page.\n\n")
+	// A blockquote, so the framing reads as a callout rather than another
+	// paragraph of body text — the nearest thing an Azure DevOps wiki has to an
+	// admonition.
+	b.WriteString("> " + summary(len(exs), len(live), len(stale)) + "\n>\n")
+	b.WriteString("> Everything here is still detected and still reported — taken off the exit-code\n")
+	b.WriteString("> gate, not hidden. This page is generated: edit the rules, not the page.\n\n")
 
 	if len(exs) == 0 {
 		b.WriteString("_No ignore rules are defined._\n")
@@ -64,13 +86,13 @@ func Render(exs []ignore.Exception, rep *report.Report, o Options) string {
 func summary(total, live, stale int) string {
 	s := fmt.Sprintf("**%s** · %d in effect", plural(total, "exception"), live)
 	if stale > 0 {
-		s += fmt.Sprintf(" · **%d suppressing nothing**", stale)
+		s += fmt.Sprintf(" · %s **%d suppressing nothing**", iconStale, stale)
 	}
 	return s
 }
 
 func writeLive(b *strings.Builder, live []ignore.Exception, firstSeen map[string]string, now time.Time) {
-	b.WriteString("## In effect\n\n")
+	b.WriteString("## " + iconLive + " In effect\n\n")
 	if len(live) == 0 {
 		b.WriteString("_None of the rules matched a finding in this run._\n\n")
 		return
@@ -79,7 +101,7 @@ func writeLive(b *strings.Builder, live []ignore.Exception, firstSeen map[string
 	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, e := range live {
 		fmt.Fprintf(b, "| %s | %s | %s | %s | %s | %s |\n",
-			code(subject(e)), strings.Join(e.Scopes, ", "), reason(e.Reason), definedIn(e),
+			code(subject(e)), scopes(e), reason(e.Reason), definedIn(e),
 			suppressing(e), since(e, firstSeen, now))
 	}
 	b.WriteString("\n")
@@ -89,15 +111,19 @@ func writeStale(b *strings.Builder, stale []ignore.Exception) {
 	if len(stale) == 0 {
 		return
 	}
-	b.WriteString("## Suppressing nothing\n\n")
+	b.WriteString("## " + iconStale + " Suppressing nothing\n\n")
 	b.WriteString("These rules matched no finding in this run. The drift they were written for may\nhave been fixed — each is a waiver nobody needs and nobody will think to remove.\n\n")
 	b.WriteString("| Exception | Scope | Reason | Defined in |\n")
 	b.WriteString("|---|---|---|---|\n")
 	for _, e := range stale {
 		fmt.Fprintf(b, "| %s | %s | %s | %s |\n",
-			code(subject(e)), strings.Join(e.Scopes, ", "), reason(e.Reason), definedIn(e))
+			code(subject(e)), scopes(e), reason(e.Reason), definedIn(e))
 	}
 	b.WriteString("\n")
+}
+
+func scopes(e ignore.Exception) string {
+	return strings.Join(e.Scopes, " · ")
 }
 
 // subject is what the rule is written against: a resource address for drift, or
@@ -161,15 +187,23 @@ func since(e ignore.Exception, firstSeen map[string]string, now time.Time) strin
 	if err != nil {
 		return "—"
 	}
-	days := int(now.Sub(t).Hours() / 24)
+	age := now.Sub(t)
+	days := int(age.Hours() / 24)
+	var when string
 	switch {
 	case days <= 0:
-		return t.Format("2006-01-02") + " (today)"
+		when = "today"
 	case days == 1:
-		return t.Format("2006-01-02") + " (1 day)"
+		when = "1 day"
 	default:
-		return fmt.Sprintf("%s (%d days)", t.Format("2006-01-02"), days)
+		when = fmt.Sprintf("%d days", days)
 	}
+	// Bold and flagged once it has been waived long enough to be worth a second
+	// look. The date alone does not prompt anyone; "⏳ 412 days" does.
+	if age >= longStanding {
+		return fmt.Sprintf("%s · %s **%s**", t.Format("2006-01-02"), iconLongStanding, when)
+	}
+	return fmt.Sprintf("%s · %s", t.Format("2006-01-02"), when)
 }
 
 // firstSeenIndex maps what a Hit records to the finding's first-detection time.
@@ -208,7 +242,7 @@ func reason(s string) string {
 	if strings.TrimSpace(s) == "" {
 		// A waiver with no reason is the one most worth chasing, so say so
 		// rather than leaving an empty cell that reads as a rendering bug.
-		return "_no reason given_"
+		return iconUnexplained + " _no reason given_"
 	}
 	return escape(s)
 }
