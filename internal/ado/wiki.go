@@ -74,11 +74,15 @@ func (c *Client) Wikis() ([]Wiki, error) {
 	}
 	_, err := c.doWith(reqOpts{
 		method:   http.MethodGet,
-		endpoint: c.projectURL("wiki/wikis") + "?api-version=" + apiVersion,
+		endpoint: c.wikisEndpoint(),
 		out:      &body,
 		needs:    WikiPermission,
 	})
 	return body.Value, err
+}
+
+func (c *Client) wikisEndpoint() string {
+	return c.projectURL("wiki/wikis") + "?api-version=" + apiVersion
 }
 
 // ResolveWiki finds the wiki to write to. An empty want picks the project wiki,
@@ -92,15 +96,25 @@ func (c *Client) ResolveWiki(want string) (Wiki, error) {
 	if err != nil {
 		return Wiki{}, err
 	}
+
+	// A named wiki is used whether or not discovery saw it. The list reflects
+	// what this identity is allowed to enumerate, which is not always what it is
+	// allowed to write; refusing an explicit instruction because a discovery call
+	// came back thin turns a working configuration into a dead end.
+	if want != "" && len(all) == 0 {
+		return Wiki{ID: want, Name: want}, nil
+	}
+
 	if len(all) == 0 {
 		// An empty list is not proof there is no wiki. Azure DevOps filters out
 		// what the caller cannot see rather than refusing, and answers a write to
 		// an invisible wiki with 404 rather than 403 — so "none" and "none you
 		// are allowed to see" are indistinguishable here, and saying only the
 		// first sends people off to create a wiki they already have.
-		return Wiki{}, fmt.Errorf("ado: no wiki visible to this identity in project %s — either the project "+
-			"has no wiki (create one: Overview > Wiki), or the identity cannot read it (Project settings > "+
-			"Repos > Repositories > the wiki's repo > Security: grant Read, and Contribute to write)", c.Project)
+		return Wiki{}, fmt.Errorf("ado: %s returned no wiki this identity can see — either the project has "+
+			"none (create one: Overview > Wiki), or the identity cannot read it (from the wiki page: "+
+			"... > Wiki security, grant Read and Contribute). Name it with -wiki to skip discovery entirely",
+			c.wikisEndpoint())
 	}
 
 	if want != "" {

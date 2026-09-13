@@ -82,7 +82,7 @@ func TestResolveWikiErrorsAreActionable(t *testing.T) {
 	if err == nil {
 		t.Fatal("empty wiki list should be an error")
 	}
-	for _, want := range []string{"no wiki visible", "create one", "cannot read it"} {
+	for _, want := range []string{"no wiki this identity can see", "create one", "cannot read it", "-wiki"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("message missing %q: %v", want, err)
 		}
@@ -137,5 +137,18 @@ func TestNormalisePath(t *testing.T) {
 		if got := normalisePath(in); got != want {
 			t.Errorf("normalisePath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// Discovery reflects what the identity may enumerate, which is not always what
+// it may write. An explicitly named wiki must survive an empty list.
+func TestResolveWikiUsesAnExplicitNameWhenDiscoveryIsEmpty(t *testing.T) {
+	c, _ := wikisServer(t, nil)
+	got, err := c.ResolveWiki("tf-snag.wiki")
+	if err != nil {
+		t.Fatalf("an explicit wiki should not need discovering: %v", err)
+	}
+	if got.ID != "tf-snag.wiki" || got.Name != "tf-snag.wiki" {
+		t.Errorf("got %+v", got)
 	}
 }
