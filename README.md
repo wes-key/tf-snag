@@ -116,6 +116,12 @@ go1.23.4`. The version is stamped by `.github/workflows/ci.yml`
 (`-ldflags "-X main.version=0.1.<run>"`); a plain `go build` falls back to the
 module version plus the embedded git revision.
 
+`-version` and `-help` also draw the tf-snag wordmark, in the same purple as the
+extension's artwork. It goes to **stderr**, so `tf-snag -version` remains exactly
+one parseable line on stdout, and it appears nowhere else — every other run
+writes a report to stdout that a pipeline redirects straight to a file. It
+follows `-color` / `NO_COLOR`, auto-detecting against stderr rather than stdout.
+
 Formats: `text` for humans/console, `json` for the tf-snag run-tab extension
 (carries a `schema` version — currently **2**: drift, deprecations, ignore-rule
 suppression, `-baseline` provenance, and per-drift `file`/`line` with `-source`),
