@@ -68,8 +68,9 @@ func Render(exs []ignore.Exception, rep *report.Report, o Options) string {
 	// paragraph of body text — the nearest thing an Azure DevOps wiki has to an
 	// admonition.
 	b.WriteString("> " + summary(len(exs), len(live), len(stale)) + "\n>\n")
-	b.WriteString("> Everything here is still detected and still reported — taken off the exit-code\n")
-	b.WriteString("> gate, not hidden. This page is generated: edit the rules, not the page.\n\n")
+	b.WriteString("> Everything here is still detected and still reported. These findings come off\n")
+	b.WriteString("> the exit-code gate, they are not hidden. This page is generated, so edit the\n")
+	b.WriteString("> rules rather than the page.\n\n")
 
 	if len(exs) == 0 {
 		b.WriteString("_No ignore rules are defined._\n")
@@ -112,7 +113,7 @@ func writeStale(b *strings.Builder, stale []ignore.Exception) {
 		return
 	}
 	b.WriteString("## " + iconStale + " Suppressing nothing\n\n")
-	b.WriteString("These rules matched no finding in this run. The drift they were written for may\nhave been fixed — each is a waiver nobody needs and nobody will think to remove.\n\n")
+	b.WriteString("These rules matched no finding in this run. The drift they were written for may\nhave been fixed, leaving a waiver that nobody needs and nobody will think to\nremove.\n\n")
 	b.WriteString("| Exception | Scope | Reason | Defined in |\n")
 	b.WriteString("|---|---|---|---|\n")
 	for _, e := range stale {
@@ -181,11 +182,11 @@ func since(e ignore.Exception, firstSeen map[string]string, now time.Time) strin
 		}
 	}
 	if oldest == "" {
-		return "—" // no -baseline, so provenance is unknown rather than absent
+		return "no baseline" // provenance is unknown, not absent
 	}
 	t, err := time.Parse(time.RFC3339, oldest)
 	if err != nil {
-		return "—"
+		return "no baseline"
 	}
 	age := now.Sub(t)
 	days := int(age.Hours() / 24)
