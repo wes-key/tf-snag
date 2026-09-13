@@ -113,6 +113,58 @@ func TestRunVersion(t *testing.T) {
 	}
 }
 
+// The wordmark must never reach stdout: -version's single line is a contract,
+// and every other run puts a machine-readable report there.
+func TestRunVersionBannerOnStderrOnly(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := run([]string{"-version"}, strings.NewReader(""), &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	if lines := strings.Count(strings.TrimSpace(out.String()), "\n"); lines != 0 {
+		t.Errorf("stdout should be one line, got %d extra:\n%s", lines, out.String())
+	}
+	if strings.Contains(out.String(), "█") {
+		t.Errorf("wordmark leaked onto stdout:\n%s", out.String())
+	}
+	if !strings.Contains(errb.String(), "█") {
+		t.Errorf("wordmark missing from stderr:\n%s", errb.String())
+	}
+}
+
+func TestRunUsageShowsBanner(t *testing.T) {
+	var out, errb bytes.Buffer
+	// An unparseable flag is what sends most people to the usage text.
+	if code := run([]string{"-not-a-flag"}, strings.NewReader(""), &out, &errb); code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "█") {
+		t.Errorf("wordmark missing from usage:\n%s", errb.String())
+	}
+	if !strings.Contains(errb.String(), "usage: terraform show -json") {
+		t.Errorf("usage text missing:\n%s", errb.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("usage wrote to stdout: %q", out.String())
+	}
+}
+
+func TestRunVersionBannerColor(t *testing.T) {
+	// Buffers are never terminals, so auto must stay plain - that is what keeps
+	// the banner clean in a pipeline log.
+	for _, tc := range []struct {
+		color string
+		want  bool
+	}{{"always", true}, {"never", false}, {"auto", false}} {
+		var out, errb bytes.Buffer
+		if code := run([]string{"-version", "-color", tc.color}, strings.NewReader(""), &out, &errb); code != 0 {
+			t.Fatalf("-color %s: exit = %d", tc.color, code)
+		}
+		if got := strings.Contains(errb.String(), "\x1b["); got != tc.want {
+			t.Errorf("-color %s: coloured = %v, want %v", tc.color, got, tc.want)
+		}
+	}
+}
+
 func TestRunUnknownFormat(t *testing.T) {
 	var out, errb bytes.Buffer
 	code := run([]string{"-plan", "testdata/plan-drift.json", "-format", "yaml"}, strings.NewReader(""), &out, &errb)
