@@ -57,10 +57,11 @@ func (c *Client) ResolveWiki(want string) (Wiki, error) {
 		endpoint: c.gitURL("repositories/" + url.PathEscape(want)),
 		out:      &repo,
 		needs:    WikiPermission,
+		notFound: "the wiki's repository name — and try its id instead, which resolves when the name does not",
 	})
 	if err != nil {
-		return Wiki{}, fmt.Errorf("%w — is %q the wiki's repository? A project wiki's is \"<project>.wiki\", "+
-			"a code wiki's is the repository it was published from", err, want)
+		return Wiki{}, fmt.Errorf("%w (looked for repository %q; a project wiki's is \"<project>.wiki\", a code "+
+			"wiki's is the repository it was published from, and -wiki also accepts the repository id)", err, want)
 	}
 	branch := strings.TrimPrefix(repo.DefaultBranch, "refs/heads/")
 	if branch == "" {

@@ -130,6 +130,10 @@ type reqOpts struct {
 	// needs names the permission a 403 is complaining about. Defaults to the
 	// work item scope, which is what nearly every call here wants.
 	needs string
+	// notFound says what a 404 means for this call. Azure DevOps answers a
+	// resource the identity cannot see with 404 rather than 403, so the hint has
+	// to name both possibilities for the call at hand.
+	notFound string
 	// allow404 returns the status instead of an error, for "does this exist?".
 	allow404 bool
 }
@@ -166,7 +170,7 @@ func (c *Client) doWith(o reqOpts) (*http.Response, error) {
 	if o.allow404 && resp.StatusCode == http.StatusNotFound {
 		return resp, nil
 	}
-	if err := checkStatus(resp, raw, o.method, o.endpoint, o.needs); err != nil {
+	if err := checkStatus(resp, raw, o.method, o.endpoint, o.needs, o.notFound); err != nil {
 		return resp, err
 	}
 	if o.out == nil {
@@ -181,7 +185,7 @@ func (c *Client) doWith(o reqOpts) (*http.Response, error) {
 // checkStatus turns a non-2xx into an error that says what to do about it.
 // Azure DevOps answers an unauthenticated API call with 203 and an HTML sign-in
 // page rather than 401, which is otherwise a baffling failure to debug.
-func checkStatus(resp *http.Response, body []byte, method, endpoint, needs string) error {
+func checkStatus(resp *http.Response, body []byte, method, endpoint, needs, notFound string) error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 && resp.StatusCode != http.StatusNonAuthoritativeInfo {
 		return nil
 	}
@@ -197,9 +201,9 @@ func checkStatus(resp *http.Response, body []byte, method, endpoint, needs strin
 	case http.StatusNotFound:
 		// The hint has to match the call. A 404 from a wiki write telling you to
 		// check the work item type sends you looking in the wrong place entirely.
-		missing := "the organisation, project and work item type exist"
-		if strings.Contains(endpoint, "/wiki/") {
-			missing = "the wiki exists and the page path is valid"
+		missing := notFound
+		if missing == "" {
+			missing = "the organisation, project and work item type exist"
 		}
 		return fmt.Errorf("ado: %s returned %s — check %s",
 			describe(method, endpoint), resp.Status, missing)

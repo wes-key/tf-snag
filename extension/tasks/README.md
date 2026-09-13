@@ -200,13 +200,39 @@ the page without writing.
 It shares `adoUrl` and `adoToken` with work items, so set `workItems: off` to use
 them for the register alone.
 
-Permissions come from the wiki's own **⋯ → Wiki security**: add **both**
-`<Project> Build Service (<org>)` and `Project Collection Build Service (<org>)`
-with **Read** and **Contribute**. Which of the two the job runs as depends on the
-pipeline's *Build job authorization scope*, and granting only one is the usual
-reason this silently does nothing. A permission problem surfaces as *"no wiki
-this identity can see"* or a **404**, never a 403 — Azure DevOps hides what you
-cannot see rather than refusing it. The page is only written when its content has changed, so a daily run does
+The register is written as a **commit to the wiki's Git repository**, not through
+the Wiki API — the build service identity has repository access and does not
+appear to have wiki access, so this is what lets it publish without a PAT.
+
+`wiki` therefore names the wiki's **repository** (`<Project>.wiki` for a project
+wiki), by name or id; pin the id if the name does not resolve. The identity needs
+**Contribute** on it, granted from the wiki's **⋯ → Wiki security**. Expect a
+**404** rather than a 403 when it is missing: Azure DevOps hides what an identity
+cannot see rather than refusing it.
+
+**The pipeline has to reference the wiki repository**, or the job's token never
+reaches it and every call returns 404 no matter what has been granted — *Limit
+job authorization scope to referenced Azure DevOps repositories* scopes the token
+before permissions are consulted, and the wiki is a separate repository. Either
+name it in the pipeline:
+
+```yaml
+resources:
+  repositories:
+    - repository: wiki
+      type: git
+      name: <Project>.wiki
+
+jobs:
+  - job: drift
+    uses:
+      repositories: [wiki]
+```
+
+(declared, not checked out — the task writes through the Git API), or turn the
+setting off under **Project settings → Pipelines → Settings**. The first grants
+one repository to one pipeline and says so in the YAML; the second grants every
+repository to every pipeline in the project and leaves no trace. The page is only written when its content has changed, so a daily run does
 not bury the wiki revisions that mean something. One page per pipeline: two
 pointed at the same path will overwrite each other.
 

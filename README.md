@@ -467,29 +467,63 @@ backing repository, so nothing here constructs an identifier.
 `-wiki-page` needs `-ado-url` to say which project. All output goes to stderr,
 so it never contaminates `-format json`/`sarif` on stdout.
 
-**Permissions.** Grant them from the wiki itself: **⋯ → Wiki security**, add the
-identity, set **Read** and **Contribute** to Allow. (The same permissions live
-under *Project settings → Repos → Repositories → the wiki's repo → Security*, but
-that page is no help when Repos is disabled for the project, or when the wiki
-repo simply is not listed.)
+**How it is written.** As a **commit to the wiki's Git repository**, not through
+the Wiki API. A wiki is a repository of markdown files and both routes reach the
+same pages, but they need different scopes: the Wiki API wants `vso.wiki_write`,
+which a pipeline's `System.AccessToken` does not appear to carry, while the Git
+API wants `vso.code_write`, which it plainly does — it clones the repository
+every run. Going through Git is what lets the build service publish without a PAT.
 
-**Grant both build service identities.** A pipeline's `System.AccessToken` runs
-as either `<Project> Build Service (<org>)` or `Project Collection Build Service
-(<org>)` depending on the pipeline's *Build job authorization scope*. Adding only
-one and getting no change is the single most likely reason this does not work.
-Using a PAT instead? It needs the **Wiki (Read & Write)** scope *and* the user
-behind it needs Contribute — the scope bounds what the token may do, the
-permission decides what the identity may do.
+**Permissions.** The build service needs **Contribute** on the wiki's repository:
+`<Project>.wiki` for a project wiki, or the repository it was published from for
+a code wiki. Grant it from the wiki's own **⋯ → Wiki security**, or under
+*Project settings → Repos → Repositories* when the wiki repo is listed there.
+
+**Naming it.** `-wiki` is the wiki's **repository**, and takes a name or an id.
+The name does not always resolve through the Git API; the repository id always
+does, and is worth pinning in a pipeline. tf-snag logs which repository and
+branch it is writing to.
+
+**The pipeline must reference the wiki repository.** This is the one that costs
+people a day. Azure DevOps has a setting — *Limit job authorization scope to
+referenced Azure DevOps repositories* — which, when on, scopes a job's token to
+only the repositories the pipeline names. The wiki is a *separate* repository, so
+unless it is referenced the token never reaches it, **whatever permissions the
+build service has been granted**: the scope is applied before any ACL is
+consulted. Two ways out.
+
+*Declare the repository in the calling pipeline* — least privilege, and visible
+to whoever reads the YAML next:
+
+```yaml
+resources:
+  repositories:
+    - repository: wiki
+      type: git
+      name: <Project>.wiki      # the wiki's repository
+
+jobs:
+  - job: drift
+    uses:
+      repositories: [wiki]      # brings it into this job's token scope
+    steps: ...
+```
+
+Declared, not checked out — `uses` grants the access, and tf-snag writes through
+the Git API rather than from a working copy.
+
+*Or turn the setting off* — **Project settings → Pipelines → Settings → Limit job
+authorization scope to referenced Azure DevOps repositories** (there is an
+organisation-level equivalent, which locks the project one when enforced). One
+toggle instead of four lines, but it restores that reach for **every pipeline in
+the project**, not just this one, and leaves nothing in the YAML to explain why
+the wiki suddenly works. Prefer the first unless you have a reason not to.
 
 **A permission problem does not look like one.** Azure DevOps hides what an
-identity cannot see rather than refusing it, so an unreadable wiki is reported as
-an empty wiki list, and a write to it comes back **404**, not 403. If tf-snag
-says it can see no wiki while you can see one in the browser, it is access — not
-a missing wiki, and not the page path. Compare the two directly:
-
-```
-https://dev.azure.com/<org>/<project>/_apis/wiki/wikis?api-version=7.0
-```
+identity cannot see rather than refusing it, so the failure arrives as a **404**
+rather than a 403 — as a missing wiki, repository or page rather than a missing
+permission. Comparing what you can see against what the pipeline can see is the
+quickest way to tell them apart.
 
 Work items are a separate scope, so an identity that raises items happily can
 still be refused here.
