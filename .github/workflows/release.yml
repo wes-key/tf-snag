@@ -8,8 +8,9 @@
 #
 # and merging it tags the merge commit, builds and publishes the GitHub Release
 # (build-release.yml), publishes the Azure DevOps extension to the prod channel
-# (publish-extension.yml) and comments the version back on the PR. A PR without
-# a release label merges without releasing anything.
+# (publish-extension.yml), moves the README's release badge and comments the
+# version back on the PR. A PR without a release label merges without releasing
+# anything.
 #
 # The bump is taken from the newest stable vX.Y.Z tag; pre-release tags
 # (vX.Y.Z-dev.N, pushed by hand - see ci.yml) are ignored. With no stable tag
@@ -127,6 +128,33 @@ jobs:
       channel: prod
       dry_run: false
     secrets: inherit
+
+  # The README's release badge. shields.io reads GitHub anonymously, so it cannot
+  # see a private repo's releases; instead it reads a shields endpoint JSON from
+  # a public gist, which this job rewrites. Only the version number is public.
+  #
+  # Needs repo variable GIST_ID (the gist holding tf-snag-release.json) and
+  # secret GIST_TOKEN (a fine-grained PAT with account permission Gists: write).
+  badge:
+    needs: [version, build]
+    if: vars.GIST_ID != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Point the release badge at ${{ needs.version.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ vars.GIST_ID }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -eu -o pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::secret GIST_TOKEN is not set, so the release badge still shows the previous version"
+            exit 1
+          fi
+          badge=$(jq -cn --arg tag "$TAG" '{schemaVersion: 1, label: "release", message: $tag, color: "blue"}')
+          jq -n --arg content "$badge" '{files: {"tf-snag-release.json": {content: $content}}}' |
+            gh api -X PATCH "gists/$GIST_ID" --input - >/dev/null
+          echo "badge now reads $TAG"
 
   comment:
     needs: [version, build]

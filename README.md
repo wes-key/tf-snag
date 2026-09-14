@@ -1,6 +1,7 @@
 # tf-snag
 
 [![CI](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml/badge.svg)](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/wes-key/GIST_ID/raw/tf-snag-release.json)](https://github.com/wes-key/tf-snag/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.23-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -640,7 +641,15 @@ Merging it runs `.github/workflows/release.yml`, which:
    binaries and publishes a GitHub Release marked *latest*, with notes listing
    the PRs merged since the previous stable release;
 3. publishes the Azure DevOps extension to the `prod` channel;
-4. comments the version on the PR.
+4. points the README's release badge at the new version;
+5. comments the version on the PR.
+
+The badge is a [shields.io endpoint](https://shields.io/badges/endpoint-badge)
+reading `tf-snag-release.json` from a public gist, because shields.io cannot see
+a private repo's releases. The workflow rewrites that file, and only the version
+number is public. It needs repo variable `GIST_ID` and secret `GIST_TOKEN` (a
+fine-grained token with account permission *Gists: Read and write*); without
+`GIST_ID` the step is skipped.
 
 A PR without a release label merges without releasing anything, so several can
 land and go out together under the next labelled one. To release without a PR,
