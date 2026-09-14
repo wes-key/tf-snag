@@ -1,0 +1,93 @@
+# Builds the tf-snag CLI and publishes it as a GitHub Release.
+#
+#   tf-snag       linux/amd64    (for CI agents)
+#   tf-snag.exe   windows/amd64  (for local use)
+#
+# Reusable only - it is the one place a release is built, so a stable release
+# and a pre-release cannot drift apart. Two callers:
+#
+#   release.yml   stable vX.Y.Z, from a PR merged with a release:* label
+#   ci.yml        pre-release vX.Y.Z-<pre>, from a tag pushed by hand
+#
+# A tag containing a hyphen is marked as a GitHub pre-release; anything else is
+# marked "latest". When the tag does not exist yet (the release.yml path),
+# `gh release create` makes it on `ref`.
+
+name: Build and release
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "vX.Y.Z, or vX.Y.Z-<pre> for a pre-release"
+        required: true
+        type: string
+      ref:
+        description: "Commit SHA to build, and to tag if the tag does not exist yet"
+        required: true
+        type: string
+      notes_start_tag:
+        description: "Generate release notes from PRs merged since this tag (empty: GitHub picks)"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      # Again, on the exact commit being released: a squash merge is a commit no
+      # PR run has tested.
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: Build linux + windows binaries
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eux -o pipefail
+          VER="${TAG#v}"
+          if ! [[ "$TAG" == v* && "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::tag '$TAG' is not vX.Y.Z or vX.Y.Z-<pre>"
+            exit 1
+          fi
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          mkdir -p dist
+          # Stamp the version so `tf-snag -version` reports it.
+          ldflags="-s -w -X main.version=$VER"
+          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/tf-snag .
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/tf-snag.exe .
+          ./dist/tf-snag -version
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.ref }}
+          NOTES_START_TAG: ${{ inputs.notes_start_tag }}
+        run: |
+          set -eu
+          args=(--title "$TAG" --target "$REF" --generate-notes
+                --notes "tf-snag $VER (linux/amd64 + windows/amd64)")
+          # Hyphen in the tag (v1.2.0-dev.1, -rc.1, ...) => pre-release.
+          case "$TAG" in
+            *-*) args+=(--prerelease) ;;
+            *)   args+=(--latest) ;;
+          esac
+          if [ -n "$NOTES_START_TAG" ]; then
+            args+=(--notes-start-tag "$NOTES_START_TAG")
+          fi
+          gh release create "$TAG" dist/tf-snag dist/tf-snag.exe "${args[@]}"

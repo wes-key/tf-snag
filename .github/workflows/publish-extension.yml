@@ -6,7 +6,11 @@
 # this workflow does via --share-with. To make it public later, flip "public" to
 # true in the manifest (a public listing then goes through Microsoft review).
 #
-# Manual, on-demand only. Prerequisites:
+# Runs two ways:
+#   - prod, automatically, after every stable release (release.yml calls it)
+#   - either channel, on demand from the Actions tab
+#
+# Prerequisites:
 #   - a Marketplace publisher matching vss-extension.json "publisher" (wes-key),
 #     created at https://marketplace.visualstudio.com/manage
 #   - repo secret TFX_MARKETPLACE_TOKEN: an Azure DevOps PAT, "All accessible
@@ -14,9 +18,12 @@
 #   - repo variable ADO_ORG: the Azure DevOps org to share the private extension
 #     with (required for a real publish; not needed for a dry run)
 #
-# Version published is 0.<minor>.<run_number> (minor taken from the manifest), so
-# re-runs always publish a higher version - the Marketplace rejects re-publishing
-# an existing one. Bump the minor in vss-extension.json for a deliberate step.
+# Version published is 0.<minor>.<patch>: minor from the manifest, patch one past
+# the newest the Marketplace already has for that channel (tools/next-version.js).
+# The Marketplace rejects re-publishing a version, and this workflow and
+# release.yml each have their own run number, so asking it is the only counter
+# both can share. Bump the minor in vss-extension.json for a deliberate step. The
+# major stays 0: pipelines reference the tasks as tf-snag@0.
 #
 # The tasks are stamped with that same version by tools/stamp-tasks.js before
 # packaging: an agent caches a task by id + version, so it keeps running the old
@@ -27,6 +34,16 @@
 name: Publish ADO extension
 
 on:
+  workflow_call:
+    inputs:
+      channel:
+        description: "prod or dev"
+        type: string
+        default: prod
+      dry_run:
+        description: "Package the .vsix as a build artifact but do not publish"
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       channel:
@@ -64,9 +81,35 @@ jobs:
 
       - name: Resolve version
         id: ver
+        env:
+          TFX_PAT: ${{ secrets.TFX_MARKETPLACE_TOKEN }}
+          CHANNEL: ${{ inputs.channel }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
+          set -eu -o pipefail
+          if [ "$CHANNEL" != prod ] && [ "$CHANNEL" != dev ]; then
+            echo "::error::channel must be prod or dev (got '$CHANNEL')"
+            exit 1
+          fi
           minor=$(node -p "require('./vss-extension.json').version.split('.')[1]")
-          echo "version=0.${minor}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          publisher=$(node -p "require('./vss-extension.json').publisher")
+          if [ "$CHANNEL" = dev ]; then
+            id=$(node -p "require('./configs/dev.json').id")
+          else
+            id=$(node -p "require('./vss-extension.json').id")
+          fi
+          if [ -z "${TFX_PAT:-}" ]; then
+            if [ "$DRY_RUN" != "true" ]; then
+              echo "::error::secret TFX_MARKETPLACE_TOKEN is not set" >&2
+              exit 1
+            fi
+            # A dry run publishes nothing, so any unused-looking version will do.
+            echo "::notice::no Marketplace token - dry run packages as 0.${minor}.${GITHUB_RUN_NUMBER}"
+            echo "version=0.${minor}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version=$(npx tfx-cli extension show --publisher "$publisher" --extension-id "$id"             --auth-type pat --token "$TFX_PAT" --json | node tools/next-version.js --minor "$minor")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Stamp task versions (${{ inputs.channel }})
         run: node tools/stamp-tasks.js --version "${{ steps.ver.outputs.version }}" --channel "${{ inputs.channel }}"
@@ -88,10 +131,6 @@ jobs:
           if [ "$DRY_RUN" = "true" ]; then
             npx tfx-cli extension create "${args[@]}"
           else
-            if [ -z "${TFX_PAT:-}" ]; then
-              echo "::error::secret TFX_MARKETPLACE_TOKEN is not set" >&2
-              exit 1
-            fi
             if [ -z "${ADO_ORG:-}" ]; then
               echo "::error::variable ADO_ORG (the org to share the extension with) is not set" >&2
               exit 1

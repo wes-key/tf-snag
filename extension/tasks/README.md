@@ -124,7 +124,7 @@ job, and the finding is the point. A tool or plan error still fails it.
 | Input | Default | |
 |---|---|---|
 | `version` | `latest` | a release tag (`v0.1.2`) to pin, or `latest` |
-| `includePrerelease` | `true` | `latest` takes the newest tag of any kind. On by default because tf-snag has not cut a stable release yet — untick it once one exists |
+| `includePrerelease` | `false` | `latest` takes the newest stable release. Tick it to take the newest tag of any kind, `-dev.N` / `-rc.N` included |
 | `repository` | `wes-key/tf-snag` | change only for a fork |
 | `githubToken` | — | needs read-only **Contents**; required while the repository is private |
 
@@ -311,7 +311,7 @@ that every relative `require()` resolves in the package, and that each task has 
 
 An agent caches a task by **id + version**, so a change does not reach it until
 the version in `task.json` goes up. `tools/stamp-tasks.js` does that at publish
-time, giving the tasks the same `0.<minor>.<run_number>` the extension gets:
+time, giving the tasks the same `0.<minor>.<patch>` the extension gets:
 
 ```
 node tools/stamp-tasks.js --version 0.6.42 [--channel dev]

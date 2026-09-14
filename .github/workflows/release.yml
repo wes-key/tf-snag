@@ -1,0 +1,174 @@
+# Cuts a stable tf-snag release when a labelled PR is merged into main.
+#
+# Label the PR with exactly one of
+#
+#   release:patch   v1.2.3 -> v1.2.4   fixes
+#   release:minor   v1.2.3 -> v1.3.0   new flags, inputs, report fields
+#   release:major   v1.2.3 -> v2.0.0   anything a pipeline has to change for
+#
+# and merging it tags the merge commit, builds and publishes the GitHub Release
+# (build-release.yml), publishes the Azure DevOps extension to the prod channel
+# (publish-extension.yml), moves the README's release badge and comments the
+# version back on the PR. A PR without a release label merges without releasing
+# anything.
+#
+# The bump is taken from the newest stable vX.Y.Z tag; pre-release tags
+# (vX.Y.Z-dev.N, pushed by hand - see ci.yml) are ignored. With no stable tag
+# yet the base is v0.0.0, so the first release:major is v1.0.0.
+#
+# To release without a PR, run this workflow from the Actions tab on main and
+# pick the bump there.
+
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which part of the version to bump"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: read
+
+# One release at a time: two PRs merged back to back must not both read the same
+# latest tag and try to cut the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged &&
+       (contains(github.event.pull_request.labels.*.name, 'release:patch') ||
+        contains(github.event.pull_request.labels.*.name, 'release:minor') ||
+        contains(github.event.pull_request.labels.*.name, 'release:major')))
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.next.outputs.tag }}
+      previous: ${{ steps.next.outputs.previous }}
+      ref: ${{ steps.next.outputs.ref }}
+    steps:
+      - name: Resolve the next version
+        id: next
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          DISPATCH_BUMP: ${{ inputs.bump }}
+          LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
+        run: |
+          set -eu -o pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$REF_NAME" != main ]; then
+              echo "::error::stable releases are cut from main only (this run is on $REF_NAME)"
+              exit 1
+            fi
+            bump="$DISPATCH_BUMP"
+          else
+            bumps=$(jq -r '.[] | select(startswith("release:")) | ltrimstr("release:")' <<<"$LABELS")
+            if [ "$(wc -l <<<"$bumps")" -ne 1 ]; then
+              echo "::error::the PR has more than one release label ($(tr '\n' ' ' <<<"$bumps")) - keep exactly one"
+              exit 1
+            fi
+            bump="$bumps"
+          fi
+
+          # Fetched separately so an API failure fails the run, rather than reading
+          # as "no stable release yet" and cutting a v1.0.0.
+          tags=$(gh api "repos/$REPO/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
+          previous=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" | sort -V | tail -n1 || true)
+          IFS=. read -r major minor patch <<<"${previous#v}"
+          major=${major:-0} minor=${minor:-0} patch=${patch:-0}
+          case "$bump" in
+            major) major=$((major + 1)) minor=0 patch=0 ;;
+            minor) minor=$((minor + 1)) patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+            *) echo "::error::unknown bump '$bump'"; exit 1 ;;
+          esac
+          tag="v$major.$minor.$patch"
+
+          if gh api "repos/$REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "::error::tag $tag already exists"
+            exit 1
+          fi
+
+          echo "${previous:-no stable release yet} -> $tag ($bump) on $SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "tag=$tag"
+            echo "previous=$previous"
+            echo "ref=$SHA"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    permissions:
+      contents: write
+    uses: ./.github/workflows/build-release.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
+      ref: ${{ needs.version.outputs.ref }}
+      notes_start_tag: ${{ needs.version.outputs.previous }}
+
+  # The CLI release goes out first: the prod install task defaults to the newest
+  # stable release, so the tasks must never reach agents before a binary does.
+  extension:
+    needs: build
+    uses: ./.github/workflows/publish-extension.yml
+    with:
+      channel: prod
+      dry_run: false
+    secrets: inherit
+
+  # The README's release badge. shields.io reads GitHub anonymously, so it cannot
+  # see a private repo's releases; instead it reads a shields endpoint JSON from
+  # a public gist, which this job rewrites. Only the version number is public.
+  #
+  # Needs repo variable GIST_ID (the gist holding tf-snag-release.json) and
+  # secret GIST_TOKEN (a fine-grained PAT with account permission Gists: write).
+  badge:
+    needs: [version, build]
+    if: vars.GIST_ID != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Point the release badge at ${{ needs.version.outputs.tag }}
+        env:
+          GH_TOKEN: ${{ secrets.GIST_TOKEN }}
+          GIST_ID: ${{ vars.GIST_ID }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -eu -o pipefail
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::secret GIST_TOKEN is not set, so the release badge still shows the previous version"
+            exit 1
+          fi
+          badge=$(jq -cn --arg tag "$TAG" '{schemaVersion: 1, label: "release", message: $tag, color: "blue"}')
+          jq -n --arg content "$badge" '{files: {"tf-snag-release.json": {content: $content}}}' |
+            gh api -X PATCH "gists/$GIST_ID" --input - >/dev/null
+          echo "badge now reads $TAG"
+
+  comment:
+    needs: [version, build]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment the release on the PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          gh pr comment "$PR" -R "$REPO" \
+            --body "Released in [$TAG](https://github.com/$REPO/releases/tag/$TAG)."
