@@ -183,7 +183,7 @@ exercises auth, the dedup query and the permission pre-check without writing
 anything. `adoUrl` defaults to this project and `adoToken` to
 `$(System.AccessToken)`; the rest (`adoType`, `adoArea`, `adoRaise`, `adoClose`,
 `adoClosedState`) map to the `-ado-*` flags — see
-[Work items](../../README.md#work-items).
+[Work Items](https://github.com/wes-key/tf-snag/wiki/Work-Items).
 
 Using the pipeline's own identity needs the *&lt;Project&gt; Build Service*
 account to have **Edit work items in this node** on the area path. Without a
