@@ -158,8 +158,16 @@ function apiJSON(target, token) {
     return collect(res).then(function (body) {
       if (res.statusCode === 404) {
         throw fail(404,
-          "GitHub returned 404 for " + target + ". The tf-snag repository is private: set the githubToken " +
-          "input to a token with read-only Contents on it, and check the version exists."
+          "GitHub returned 404 for " + target + ". Check the version exists - and if the repository is " +
+          "private, set the githubToken input to a token with read-only Contents on it."
+        );
+      }
+      // Anonymous calls get 60 an hour per IP, and Microsoft-hosted agents share
+      // their IPs - so without a token, a 403 is the rate limit, not a permission.
+      if (res.statusCode === 403 && !token) {
+        throw fail(403,
+          "GitHub returned 403 for " + target + " - most likely the anonymous rate limit (60 calls an hour, " +
+          "shared by every job on this agent's IP address). Set the githubToken input to any GitHub token to lift it."
         );
       }
       if (res.statusCode === 401 || res.statusCode === 403) {
@@ -181,8 +189,8 @@ function apiJSON(target, token) {
 }
 
 // download streams a release asset to disk. Assets are fetched by their API url
-// with an octet-stream Accept, which is what makes a private repo's asset
-// downloadable with the same token.
+// with an octet-stream Accept, which works anonymously for a public repository
+// and, with a token, for a private fork's assets too.
 function download(assetURL, dest, token) {
   return request(assetURL, headers(token, "application/octet-stream")).then(function (res) {
     if (res.statusCode < 200 || res.statusCode >= 300) {

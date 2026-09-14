@@ -540,8 +540,6 @@ a drift pipeline does not have to inline any of this:
 
 ```yaml
 - task: tf-snag-install@0            # binary from a GitHub release, onto PATH
-  inputs:
-    githubToken: $(GITHUB_TOKEN)
 
 - task: tf-snag@0                    # plan -> every surface below
   inputs:
@@ -613,19 +611,16 @@ by tests. Deprecation check (`-check deprecations`, from the `terraform plan
 Summary, the tf-snag run tab (`extension/`), Teams notifications and Azure DevOps
 work items are live.
 
-The extension (manifest `0.6.0`) needs republishing alongside a release carrying
-the work item feature: the run tab shows the work item reference and the "no
-longer ignored" badge, and the `tf-snag-install` / `tf-snag` pipeline tasks are
-new.
-
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
 `main`. The `tf-drift-test-resources` drift pipeline pulls the linux binary from
 the latest stable release.
 
 ## Releasing
 
-**Stable releases come from merging a PR.** Before merging, label it with
-exactly one of:
+**Releases come from merging a PR.** The CLI and the Azure DevOps extension are
+released separately, by the same workflow (`.github/workflows/release.yml`).
+
+**CLI.** Before merging, label the PR with exactly one of:
 
 | Label | Bump | For |
 |---|---|---|
@@ -633,16 +628,20 @@ exactly one of:
 | `release:minor` | `v1.2.3` → `v1.3.0` | new flags, task inputs, report fields |
 | `release:major` | `v1.2.3` → `v2.0.0` | anything a pipeline has to change for |
 
-Merging it runs `.github/workflows/release.yml`, which:
+Merging it:
 
-1. works out the version from the newest stable `vX.Y.Z` tag (`v0.0.0` when
-   there is none, so the first `release:major` is `v1.0.0`);
+1. works out the version from the newest stable `vX.Y.Z` tag;
 2. tags the merge commit, re-runs vet + test on it, builds the linux + windows
    binaries and publishes a GitHub Release marked *latest*, with notes listing
    the PRs merged since the previous stable release;
-3. publishes the Azure DevOps extension to the `prod` channel;
-4. points the README's release badge at the new version;
-5. comments the version on the PR.
+3. points the README's release badge at the new version.
+
+**Extension.** No label needed: if the PR changed anything that goes into the
+extension package, merging it publishes the extension to the Marketplace — after
+the CLI release when the PR has both, so the tasks never reach agents ahead of
+the binary. See [extension/README.md](extension/README.md#publish).
+
+Either way, the PR gets a comment saying what was released.
 
 The badge is a [shields.io endpoint](https://shields.io/badges/endpoint-badge)
 reading `tf-snag-release.json` from a public gist, because shields.io cannot see
@@ -651,9 +650,9 @@ number is public. It needs repo variable `GIST_ID` and secret `GIST_TOKEN` (a
 fine-grained token with account permission *Gists: Read and write*); without
 `GIST_ID` the step is skipped.
 
-A PR without a release label merges without releasing anything, so several can
-land and go out together under the next labelled one. To release without a PR,
-run the **Release** workflow on `main` from the Actions tab and pick the bump.
+A PR without a release label releases no CLI, so several can land and go out
+together under the next labelled one. To release without a PR, run the
+**Release** workflow on `main` from the Actions tab and pick what to release.
 
 **Pre-releases are tags pushed by hand**, and publish as GitHub pre-releases
 (nothing is published to the Marketplace):

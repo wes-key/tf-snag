@@ -13,8 +13,6 @@ carry. The whole check is now:
 
 ```yaml
 - task: tf-snag-install@0
-  inputs:
-    githubToken: $(GITHUB_TOKEN)
 
 - task: tf-snag@0
   inputs:
@@ -65,7 +63,7 @@ steps:
   - task: tf-snag-install@0
     displayName: 'Install tf-snag'
     inputs:
-      githubToken: $(GITHUB_TOKEN)      # read-only Contents on wes-key/tf-snag
+      githubToken: $(GITHUB_TOKEN)      # optional; lifts GitHub's anonymous rate limit
 
   # The previous run's reports. tf-snag.sarif from it is the default baseline,
   # which is what stamps each finding new / updated with a first-seen time.
@@ -126,7 +124,7 @@ job, and the finding is the point. A tool or plan error still fails it.
 | `version` | `latest` | a release tag (`v0.1.2`) to pin, or `latest` |
 | `includePrerelease` | `false` | `latest` takes the newest stable release. Tick it to take the newest tag of any kind, `-dev.N` / `-rc.N` included |
 | `repository` | `wes-key/tf-snag` | change only for a fork |
-| `githubToken` | — | needs read-only **Contents**; required while the repository is private |
+| `githubToken` | — | optional. Without one GitHub allows 60 API calls an hour per IP, shared by every job on a Microsoft-hosted agent's address — set one if installs fail on a rate limit. Needs read-only **Contents** for a private fork |
 
 Sets `tfSnagPath` and `tfSnagVersion` as output variables, and prepends the
 binary's directory to `PATH` so later steps — including a plain `script:` step —
