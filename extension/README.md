@@ -95,7 +95,10 @@ explicitly shared with.
 4. Set repo variable **`ADO_ORG`** to the Azure DevOps org to share the private
    extension with (required for a real publish; a dry run doesn't need it).
 
-**Publish** — run the **Publish ADO extension** workflow
+**Publish** — `prod` publishes by itself after every stable CLI release
+(`.github/workflows/release.yml` calls the **Publish ADO extension** workflow), so
+the tasks never reach agents ahead of the binary they install. To publish outside
+a release, or to the dev channel, run that workflow
 (`.github/workflows/publish-extension.yml`) from the Actions tab:
 
 - `channel: prod` → the `tf-snag-tab` id teams install; `channel: dev` →
@@ -104,8 +107,11 @@ explicitly shared with.
   bumping the version teams have installed.
 - `dry_run: true` → builds the `.vsix` and uploads it as a run artifact without
   publishing.
-- Version published is `0.<minor>.<run_number>` (minor from the manifest); bump
-  the minor in `vss-extension.json` for a deliberate step.
+- Version published is `0.<minor>.<patch>`: minor from the manifest, patch one
+  past the newest the Marketplace already has for that channel
+  (`tools/next-version.js`). Bump the minor in `vss-extension.json` for a
+  deliberate step. The major stays `0` — pipelines reference the tasks as
+  `tf-snag@0`, so it is not the CLI's version.
 
 The workflow shares the extension with `ADO_ORG` on every publish. Install it:
 **Organization settings → Extensions → Shared → tf-snag drift report →

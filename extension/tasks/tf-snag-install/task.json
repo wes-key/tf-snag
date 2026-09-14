@@ -25,10 +25,10 @@
       "name": "includePrerelease",
       "type": "boolean",
       "label": "Include pre-releases",
-      "defaultValue": true,
+      "defaultValue": false,
       "required": false,
       "visibleRule": "version = latest",
-      "helpMarkDown": "On by default because tf-snag has not cut a stable release yet: `latest` takes the newest tag of any kind, including `-dev.N` / `-rc.N`. Untick it to take the newest stable release instead."
+      "helpMarkDown": "Off by default: `latest` takes the newest stable release. Tick it to take the newest tag of any kind, including `-dev.N` / `-rc.N` pre-releases."
     },
     {
       "name": "repository",

@@ -111,10 +111,11 @@ sarif`, `json`, `text` and `markdown` (not `junit`, which is drift-only).
 `NO_COLOR` is unset); Azure DevOps logs render ANSI, so the pipeline passes
 `-color=always`.
 
-`tf-snag -version` prints e.g. `tf-snag 0.1.7 (a1b2c3d4e5f6) linux/amd64
-go1.23.4`. The version is stamped by `.github/workflows/ci.yml`
-(`-ldflags "-X main.version=0.1.<run>"`); a plain `go build` falls back to the
-module version plus the embedded git revision.
+`tf-snag -version` prints e.g. `tf-snag 1.2.0 (a1b2c3d4e5f6) linux/amd64
+go1.23.4`. The version is the release tag, stamped by
+`.github/workflows/build-release.yml` (`-ldflags "-X main.version=1.2.0"`); a
+plain `go build` falls back to the module version plus the embedded git
+revision.
 
 `-version` and `-help` also draw the tf-snag wordmark, in the same purple as the
 extension's artwork. It goes to **stderr**, so `tf-snag -version` remains exactly
@@ -617,7 +618,40 @@ longer ignored" badge, and the `tf-snag-install` / `tf-snag` pipeline tasks are
 new.
 
 CI is GitHub Actions (`.github/workflows/ci.yml`): vet + test on every PR and on
-`main`. Releases are tag-driven — push `vX.Y.Z` (or `vX.Y.Z-dev.N` / `-rc.N`,
-which publish as pre-releases) and CI builds the linux + windows binaries and
-attaches them to a GitHub Release. The `tf-drift-test-resources` drift pipeline
-pulls the linux binary from the latest non-pre-release.
+`main`. The `tf-drift-test-resources` drift pipeline pulls the linux binary from
+the latest stable release.
+
+## Releasing
+
+**Stable releases come from merging a PR.** Before merging, label it with
+exactly one of:
+
+| Label | Bump | For |
+|---|---|---|
+| `release:patch` | `v1.2.3` → `v1.2.4` | fixes |
+| `release:minor` | `v1.2.3` → `v1.3.0` | new flags, task inputs, report fields |
+| `release:major` | `v1.2.3` → `v2.0.0` | anything a pipeline has to change for |
+
+Merging it runs `.github/workflows/release.yml`, which:
+
+1. works out the version from the newest stable `vX.Y.Z` tag (`v0.0.0` when
+   there is none, so the first `release:major` is `v1.0.0`);
+2. tags the merge commit, re-runs vet + test on it, builds the linux + windows
+   binaries and publishes a GitHub Release marked *latest*, with notes listing
+   the PRs merged since the previous stable release;
+3. publishes the Azure DevOps extension to the `prod` channel;
+4. comments the version on the PR.
+
+A PR without a release label merges without releasing anything, so several can
+land and go out together under the next labelled one. To release without a PR,
+run the **Release** workflow on `main` from the Actions tab and pick the bump.
+
+**Pre-releases are tags pushed by hand**, and publish as GitHub pre-releases
+(nothing is published to the Marketplace):
+
+```
+git tag v1.3.0-dev.1 && git push origin v1.3.0-dev.1
+```
+
+A bare `vX.Y.Z` pushed by hand fails CI and publishes nothing — delete it with
+`git push origin :refs/tags/vX.Y.Z`.

@@ -1,22 +1,19 @@
-# Build, test, and release the tf-snag CLI.
-#
-#   tf-snag       linux/amd64    (for CI agents)
-#   tf-snag.exe   windows/amd64  (for local use)
+# Vet, test and lint the tf-snag CLI and its Azure DevOps extension.
 #
 # vet + test run on every pull request and on pushes to main, alongside a lint of
 # the Azure DevOps extension in extension/ (its tasks have no build step).
 #
-# Releases are tag-driven. Push an annotated tag and CI builds both binaries,
-# stamps the version, and publishes a GitHub Release:
+# Stable releases are not cut here: label a PR release:patch / minor / major and
+# merging it releases (see release.yml).
 #
-#   git tag v0.1.0-dev.1 && git push origin v0.1.0-dev.1   -> pre-release
-#   git tag v0.1.0-rc.1  && git push origin v0.1.0-rc.1    -> pre-release
-#   git tag v0.1.0       && git push origin v0.1.0         -> latest release
+# Pre-releases are tag-driven. Push a hyphenated tag and CI builds both binaries
+# and publishes it as a GitHub pre-release (build-release.yml):
 #
-# A tag containing a hyphen (dev.N / rc.N / ...) is marked as a GitHub
-# pre-release, so only a bare vX.Y.Z becomes "latest". Nothing here has cut a
-# stable release yet, which is why the tf-snag-install pipeline task takes the
-# newest tag of any kind by default - see extension/tasks/README.md.
+#   git tag v1.1.0-dev.1 && git push origin v1.1.0-dev.1
+#   git tag v1.1.0-rc.1  && git push origin v1.1.0-rc.1
+#
+# A bare vX.Y.Z pushed by hand is refused, so every stable release goes through
+# release.yml and carries its notes and extension publish.
 
 name: CI
 
@@ -60,43 +57,27 @@ jobs:
         working-directory: extension
         run: node tools/check-tasks.js
 
-  release:
-    needs: test
+  guard:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    steps:
+      - name: Refuse a stable tag pushed by hand
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          case "$TAG" in
+            *-*) echo "$TAG is a pre-release tag" ;;
+            *)
+              echo "::error::$TAG is a stable tag. Stable releases come from merging a PR labelled release:patch / minor / major (release.yml). Delete the tag: git push origin :refs/tags/$TAG"
+              exit 1
+              ;;
+          esac
+
+  release:
+    needs: [test, guard]
     permissions:
       contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-      - name: Build linux + windows binaries
-        run: |
-          set -eux -o pipefail
-          VER="${GITHUB_REF_NAME#v}"
-          if ! [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::tag '$GITHUB_REF_NAME' is not vX.Y.Z or vX.Y.Z-<pre>"
-            exit 1
-          fi
-          echo "VER=$VER" >> "$GITHUB_ENV"
-          mkdir -p dist
-          # Stamp the version so `tf-snag -version` reports it.
-          ldflags="-s -w -X main.version=$VER"
-          GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/tf-snag .
-          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$ldflags" -o dist/tf-snag.exe .
-          ./dist/tf-snag -version
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -eu
-          # Hyphen in the tag (v0.1.0-dev.1, -rc.1, ...) => pre-release.
-          case "$GITHUB_REF_NAME" in
-            *-*) prerelease=--prerelease ;;
-            *)   prerelease= ;;
-          esac
-          gh release create "$GITHUB_REF_NAME" dist/tf-snag dist/tf-snag.exe \
-            --title "$GITHUB_REF_NAME" \
-            --notes "tf-snag $VER (linux/amd64 + windows/amd64)" \
-            $prerelease
+    uses: ./.github/workflows/build-release.yml
+    with:
+      tag: ${{ github.ref_name }}
+      ref: ${{ github.sha }}

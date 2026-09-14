@@ -31,7 +31,7 @@ vso.run(main);
 function main() {
   var repository = vso.input("repository") || "wes-key/tf-snag";
   var version = vso.input("version") || "latest";
-  var includePrerelease = vso.boolInput("includePrerelease", true);
+  var includePrerelease = vso.boolInput("includePrerelease", false);
   var token = vso.input("githubToken");
   // A PAT reaching us from a plain variable is not masked by the agent. Ask for
   // masking before it can appear in an error body we echo.
