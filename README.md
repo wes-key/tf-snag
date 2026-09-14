@@ -1,7 +1,7 @@
 # tf-snag
 
 [![CI](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml/badge.svg)](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/wes-key/GIST_ID/raw/tf-snag-release.json)](https://github.com/wes-key/tf-snag/releases/latest)
+[![Release](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/wes-key/b87c43da7b1a3f74ed71c32a47ebea47/raw/tf-snag-release.json)](https://github.com/wes-key/tf-snag/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.23-00ADD8?logo=go&logoColor=white)](go.mod)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
