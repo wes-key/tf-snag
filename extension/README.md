@@ -58,7 +58,7 @@ by `internal/report/report.go`; `report.schema` is the contract version
 
 ## Build
 
-Requires Node 18+ and Go (for the placeholder logo only).
+Requires Node 18+ and Go (for the artwork only).
 
 ```
 cd extension
@@ -67,7 +67,7 @@ npm run logo         # writes images/logo.png + each task's 32x32 icon.png
 npm run package      # -> dist/<publisher>.tf-snag-tab-<version>.vsix
 ```
 
-`npm run logo` regenerates the placeholder artwork — the Marketplace tile and
+`npm run logo` regenerates the artwork — the Marketplace tile and
 the icon each task shows in the step list and the task picker. A task with no
 `icon.png` beside its `task.json` gets the generic document-and-gears icon
 instead; `tools/check-tasks.js` fails the build rather than let that ship. Skip
