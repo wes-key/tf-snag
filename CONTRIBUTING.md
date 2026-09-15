@@ -119,6 +119,16 @@ right matters more than tidying the individual commits.
 - Open the PR as a **draft** while work is still in progress.
 - CI must pass: `go vet`, `go test`, the extension syntax check, the task lint
   and a packaging run.
+- The **Security** checks must pass too:
+  - `govulncheck` fails on any known vulnerability that tf-snag's code can
+    reach, including ones in the Go standard library.
+  - `npm audit` fails on high or critical advisories in the extension's
+    packages.
+
+  To run govulncheck locally:
+  `go run golang.org/x/vuln/cmd/govulncheck@latest ./...`
+- **Pin actions to a full commit SHA**, with the version in a comment:
+  `uses: actions/checkout@<sha> # v4.4.0`. Dependabot keeps them up to date.
 
 ### Release labels
 
@@ -145,6 +155,17 @@ extension needs no label, because any change to its package publishes it. See
 - Keep your branch up to date with `main`, and rebase if there are conflicts.
 - A maintainer squash-merges the PR once it's approved and CI is green. After
   that, the branch is deleted.
+
+## Dependabot pull requests
+
+Dependabot opens weekly PRs for Go modules, the extension's npm packages and
+GitHub Actions. These PRs don't need an issue or the branch naming above.
+Review them like any other PR, with two extra checks:
+
+- An **npm** update changes the extension package, so merging it publishes the
+  extension.
+- A **Go module** update changes the CLI. Add a `release:patch` label if the
+  update should ship, for example when it fixes a vulnerability.
 
 ## Reporting security issues
 

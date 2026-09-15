@@ -1,0 +1,37 @@
+# Weekly dependency updates. Minor and patch bumps are grouped into one PR per
+# ecosystem; a major bump gets its own PR, since it is the one that needs reading.
+#
+# Dependabot's PRs are the exception to CONTRIBUTING.md's issue-first rule: the
+# PR itself says what changed and why, and its branch is named by Dependabot.
+#
+# Extension PRs change extension/package*.json, which is inside the package, so
+# merging one publishes the extension (release.yml). Go module PRs change the CLI
+# but carry no release:* label: add one if the update should ship.
+
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /extension
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        update-types: [minor, patch]
+
+  # Actions are pinned to commit SHAs; Dependabot moves the SHA and the version
+  # comment beside it together.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types: [minor, patch]
