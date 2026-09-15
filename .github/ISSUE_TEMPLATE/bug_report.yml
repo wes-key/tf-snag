@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in the CLI or the Azure DevOps extension is not working as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search the existing issues first. Do not report security vulnerabilities here; use a
+        [private security advisory](https://github.com/wes-key/tf-snag/security/advisories/new).
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - CLI
+        - Azure DevOps pipeline tasks
+        - Azure DevOps run tab
+        - Work items / exceptions register
+        - Teams notifications
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including the full error or unexpected output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        The command or pipeline YAML you ran. A minimal plan JSON that shows the problem helps most;
+        strip anything sensitive (subscription IDs, names, secrets) first.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: tf-snag version
+      description: Output of `tf-snag -version`, and the extension version if relevant.
+    validations:
+      required: true
+  - type: input
+    id: terraform
+    attributes:
+      label: Terraform and provider versions
+      placeholder: Terraform 1.9.5, azurerm 4.3.0
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system / agent
+      options:
+        - Linux
+        - Windows
+        - Azure Pipelines hosted agent
+        - Azure Pipelines self-hosted agent
+        - Other

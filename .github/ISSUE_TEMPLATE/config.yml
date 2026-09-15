@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/wes-key/tf-snag/wiki
+    about: Usage, flags, pipeline setup and ignore rules.
+  - name: Report a security vulnerability
+    url: https://github.com/wes-key/tf-snag/security/advisories/new
+    about: Please report security issues privately, not as a public issue.
