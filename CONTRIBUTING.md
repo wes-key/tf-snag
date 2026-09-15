@@ -75,7 +75,7 @@ go run . -plan testdata/plan-drift.json
 
 ### The Azure DevOps extension
 
-You need Node 20. See [`extension/README.md`](extension/README.md) for the full
+You need Node 24. See [`extension/README.md`](extension/README.md) for the full
 details.
 
 ```sh

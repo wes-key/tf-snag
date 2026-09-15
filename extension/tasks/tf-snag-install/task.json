@@ -52,6 +52,7 @@
     { "name": "tfSnagVersion", "description": "Release tag that was installed, e.g. v0.1.2." }
   ],
   "execution": {
+    "Node24": { "target": "install.js" },
     "Node20_1": { "target": "install.js" }
   }
 }

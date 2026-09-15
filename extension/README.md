@@ -58,7 +58,7 @@ by `internal/report/report.go`; `report.schema` is the contract version
 
 ## Build
 
-Requires Node 18+ and Go (for the artwork only).
+Requires Node 24 and Go (for the artwork only).
 
 ```
 cd extension
@@ -73,7 +73,7 @@ the icon each task shows in the step list and the task picker. A task with no
 instead; `tools/check-tasks.js` fails the build rather than let that ship. Skip
 the step if you have replaced any of them with real art.
 
-The tasks need no build of their own — they are plain Node 20 scripts with no
+The tasks need no build of their own — they are plain Node 24 scripts with no
 dependencies. See [tasks/README.md](tasks/README.md#building) for how the shared
 helper reaches both task folders, and for the version/channel stamping the
 publish workflow does.
