@@ -338,6 +338,7 @@
     { "name": "reportSarif", "description": "Path of the SARIF report — the next run's baseline." }
   ],
   "execution": {
+    "Node24": { "target": "report.js" },
     "Node20_1": { "target": "report.js" }
   }
 }

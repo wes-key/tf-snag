@@ -268,7 +268,11 @@ never fail the step. Findings are accounted for once, by the console call.
 
 ## Building
 
-No build step and no dependencies: the tasks are plain Node 20 scripts. An
+No build step and no dependencies: the tasks are plain Node scripts. Each
+`task.json` declares a `Node24` handler, which agents 3.250.0 and later run, and
+keeps `Node20_1` so older self-hosted agents fall back to Node 20 rather than
+failing the step. Azure Pipelines removes Node 20 from the agent in April 2027;
+drop the `Node20_1` handler then. Keep the scripts to APIs both versions have. An
 Azure DevOps task ships with whatever is in its own folder, so vendoring
 `azure-pipelines-task-lib` twice into the `.vsix` would buy little over the
 ~200 lines in [`common/vso.js`](common/vso.js) that read inputs, write logging
