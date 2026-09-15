@@ -4,7 +4,7 @@
   "name": "tf-snag-install",
   "friendlyName": "Install tf-snag",
   "description": "Downloads the tf-snag CLI from a GitHub release and puts it on PATH for the rest of the job.",
-  "helpMarkDown": "[Documentation](https://github.com/wes-key/tf-snag/blob/main/extension/tasks/README.md). Releases are private, so `githubToken` needs read-only **Contents** on the repository.",
+  "helpMarkDown": "[Documentation](https://github.com/wes-key/tf-snag/blob/main/extension/tasks/README.md). Downloads from the public GitHub releases of wes-key/tf-snag; no token needed.",
   "category": "Tool",
   "author": "wes-key",
   "version": { "Major": 0, "Minor": 6, "Patch": 0 },
@@ -44,7 +44,7 @@
       "label": "GitHub token",
       "defaultValue": "",
       "required": false,
-      "helpMarkDown": "A GitHub token with read-only **Contents** on the repository, e.g. `$(GITHUB_TOKEN)` from a secret pipeline variable. Required while the repository is private."
+      "helpMarkDown": "Optional. A GitHub token, e.g. `$(GITHUB_TOKEN)` from a secret pipeline variable. Without one, GitHub allows 60 API calls an hour per IP address, which Microsoft-hosted agents share - set one if the install fails on a rate limit. Needs read-only **Contents** if `repository` is a private fork."
     }
   ],
   "outputVariables": [

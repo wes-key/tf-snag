@@ -1,22 +1,24 @@
 # Publishes the Azure DevOps tf-snag extension (extension/) to the Visual Studio
 # Marketplace: the run tab and the tf-snag-install / tf-snag pipeline tasks.
 #
-# The extension is PRIVATE (vss-extension.json "public": false): it never shows
-# in Marketplace search and is only installable by orgs it is shared with, which
-# this workflow does via --share-with. To make it public later, flip "public" to
-# true in the manifest (a public listing then goes through Microsoft review).
-#
 # Runs two ways:
-#   - prod, automatically, after every stable release (release.yml calls it)
-#   - either channel, on demand from the Actions tab
+#   - prod, automatically, when a PR merged into main changed what goes into the
+#     package (release.yml calls it, after the CLI release if there is one)
+#   - either channel, on demand from the Actions tab - dev is manual only
+#
+# Visibility. vss-extension.json says "public": false, and that is what the dev
+# channel always publishes. Prod publishes public once repo variable
+# EXTENSION_PUBLIC is 'true' - which Microsoft only accepts from a verified
+# publisher, so set it after verification, not before. Until then prod is private
+# and shared with ADO_ORG.
 #
 # Prerequisites:
 #   - a Marketplace publisher matching vss-extension.json "publisher" (wes-key),
 #     created at https://marketplace.visualstudio.com/manage
 #   - repo secret TFX_MARKETPLACE_TOKEN: an Azure DevOps PAT, "All accessible
 #     organizations", scope Marketplace > Manage, owned by that publisher's account
-#   - repo variable ADO_ORG: the Azure DevOps org to share the private extension
-#     with (required for a real publish; not needed for a dry run)
+#   - repo variable ADO_ORG: the Azure DevOps org to share a private publish with
+#     (not needed for a dry run, or for prod once EXTENSION_PUBLIC is 'true')
 #
 # Version published is 0.<minor>.<patch>: minor from the manifest, patch one past
 # the newest the Marketplace already has for that channel (tools/next-version.js).
@@ -44,6 +46,14 @@ on:
         description: "Package the .vsix as a build artifact but do not publish"
         type: boolean
         default: false
+      ref:
+        description: "Commit to package (empty: the commit the run is on)"
+        type: string
+        default: ""
+    outputs:
+      version:
+        description: "The extension version packaged or published"
+        value: ${{ jobs.publish.outputs.version }}
   workflow_dispatch:
     inputs:
       channel:
@@ -65,11 +75,15 @@ jobs:
     # Optional: create a "marketplace" environment with required reviewers to
     # gate every publish behind a manual approval, and scope the PAT to it.
     # environment: marketplace
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     defaults:
       run:
         working-directory: extension
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-node@v4
         with:
@@ -108,7 +122,23 @@ jobs:
             echo "version=0.${minor}.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          version=$(npx tfx-cli extension show --publisher "$publisher" --extension-id "$id"             --auth-type pat --token "$TFX_PAT" --json | node tools/next-version.js --minor "$minor")
+          # The Marketplace gallery API hangs often enough that tfx's own
+          # three-minute timeout has failed a release before. A short cap and a
+          # few attempts turns that into a slow run rather than a failed one.
+          for attempt in 1 2 3 4; do
+            if published=$(timeout 60 npx tfx-cli extension show --publisher "$publisher" --extension-id "$id" \
+                --auth-type pat --token "$TFX_PAT" --json); then
+              break
+            fi
+            if [ "$attempt" = 4 ]; then
+              echo "::error::could not read $publisher.$id from the Marketplace after $attempt attempts"
+              exit 1
+            fi
+            echo "::warning::Marketplace lookup attempt $attempt failed; retrying in 15s"
+            sleep 15
+          done
+          version=$(node tools/next-version.js --minor "$minor" <<<"$published")
+          echo "$publisher.$id -> $version" | tee -a "$GITHUB_STEP_SUMMARY"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Stamp task versions (${{ inputs.channel }})
@@ -118,35 +148,45 @@ jobs:
         env:
           TFX_PAT: ${{ secrets.TFX_MARKETPLACE_TOKEN }}
           ADO_ORG: ${{ vars.ADO_ORG }}
+          EXTENSION_PUBLIC: ${{ vars.EXTENSION_PUBLIC }}
           CHANNEL: ${{ inputs.channel }}
           DRY_RUN: ${{ inputs.dry_run }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -eu
+          public=false
+          if [ "$CHANNEL" = prod ] && [ "${EXTENSION_PUBLIC:-}" = "true" ]; then
+            public=true
+          fi
           args=(--manifest-globs vss-extension.json --output-path dist
-                --override "{\"version\":\"${VERSION}\"}")
+                --override "{\"version\":\"${VERSION}\",\"public\":${public}}")
           if [ "$CHANNEL" = dev ]; then
             args+=(--overrides-file configs/dev.json)
           fi
+          echo "packaging $CHANNEL v$VERSION, public: $public"
           if [ "$DRY_RUN" = "true" ]; then
             npx tfx-cli extension create "${args[@]}"
-          else
+            exit 0
+          fi
+          # A public extension is installable by anyone and cannot also be shared;
+          # a private one is only visible to the orgs it is shared with.
+          if [ "$public" = false ]; then
             if [ -z "${ADO_ORG:-}" ]; then
-              echo "::error::variable ADO_ORG (the org to share the extension with) is not set" >&2
+              echo "::error::variable ADO_ORG (the org to share the private extension with) is not set" >&2
               exit 1
             fi
-            # --no-wait-validation: the upload is done by the time tfx starts
-            # polling, and that poll times out against the Marketplace often
-            # enough to mark a perfectly good publish as a failed run - which is
-            # worse than not knowing, because the next thing you do is publish
-            # again. Check it landed with:
-            #   npx tfx-cli extension isvalid --publisher wes-key \
-            #     --extension-id <id> --version <version> --token <PAT>
-            npx tfx-cli extension publish "${args[@]}" \
-              --auth-type pat --token "$TFX_PAT" \
-              --share-with "$ADO_ORG" \
-              --no-wait-validation
+            args+=(--share-with "$ADO_ORG")
           fi
+          # --no-wait-validation: the upload is done by the time tfx starts
+          # polling, and that poll times out against the Marketplace often
+          # enough to mark a perfectly good publish as a failed run - which is
+          # worse than not knowing, because the next thing you do is publish
+          # again. Check it landed with:
+          #   npx tfx-cli extension isvalid --publisher wes-key \
+          #     --extension-id <id> --version <version> --token <PAT>
+          npx tfx-cli extension publish "${args[@]}" \
+            --auth-type pat --token "$TFX_PAT" \
+            --no-wait-validation
 
       - uses: actions/upload-artifact@v4
         with:

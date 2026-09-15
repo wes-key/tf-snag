@@ -58,7 +58,7 @@ by `internal/report/report.go`; `report.schema` is the contract version
 
 ## Build
 
-Requires Node 18+ and Go (for the placeholder logo only).
+Requires Node 18+ and Go (for the artwork only).
 
 ```
 cd extension
@@ -67,7 +67,7 @@ npm run logo         # writes images/logo.png + each task's 32x32 icon.png
 npm run package      # -> dist/<publisher>.tf-snag-tab-<version>.vsix
 ```
 
-`npm run logo` regenerates the placeholder artwork — the Marketplace tile and
+`npm run logo` regenerates the artwork — the Marketplace tile and
 the icon each task shows in the step list and the task picker. A task with no
 `icon.png` beside its `task.json` gets the generic document-and-gears icon
 instead; `tools/check-tasks.js` fails the build rather than let that ship. Skip
@@ -78,11 +78,29 @@ dependencies. See [tasks/README.md](tasks/README.md#building) for how the shared
 helper reaches both task folders, and for the version/channel stamping the
 publish workflow does.
 
-## Publish (private to this org)
+## Publish
 
-The extension is **private** (`"public": false` in `vss-extension.json`): it is
-never listed in Marketplace search and is only installable by orgs it has been
-explicitly shared with.
+**Merging a PR publishes it.** When a PR merged into `main` changed anything that
+goes into the package — `tab/`, `tasks/`, `images/`, `vss-extension.json`,
+`overview.md` or the npm manifests — `.github/workflows/release.yml` publishes the
+`prod` channel. No label is needed. If the same PR carries a `release:*` label, the
+CLI release goes out first and the extension follows it, so the tasks never reach
+agents ahead of the binary they install. The PR gets a comment with the version.
+
+CI packages the extension on every PR exactly as prod publishes it, so a manifest
+the Marketplace would refuse fails before the merge rather than after.
+
+`overview.md` is the Marketplace listing page. This README is not packaged.
+
+**Version** is `0.<minor>.<patch>`: minor from `vss-extension.json`, patch one past
+the newest the Marketplace already has for that channel (`tools/next-version.js`).
+Bump the minor for a deliberate step. The major stays `0` — pipelines reference
+the tasks as `tf-snag@0`, so it is not the CLI's version.
+
+**Visibility.** `prod` publishes **public** once the repo variable
+**`EXTENSION_PUBLIC`** is `true`, and private — shared with `ADO_ORG` — until then.
+The Marketplace only accepts a public extension from a verified publisher, so set
+the variable after verification. The `dev` channel is always private.
 
 **One-time setup**
 
@@ -92,30 +110,31 @@ explicitly shared with.
 2. Create an Azure DevOps **PAT**: *All accessible organizations*, scope
    *Marketplace → Manage*, from an account that owns that publisher.
 3. Add it as the GitHub repo secret **`TFX_MARKETPLACE_TOKEN`**.
-4. Set repo variable **`ADO_ORG`** to the Azure DevOps org to share the private
-   extension with (required for a real publish; a dry run doesn't need it).
+4. Set repo variable **`ADO_ORG`** to the Azure DevOps org to share a private
+   publish with.
 
-**Publish** — `prod` publishes by itself after every stable CLI release
-(`.github/workflows/release.yml` calls the **Publish ADO extension** workflow), so
-the tasks never reach agents ahead of the binary they install. To publish outside
-a release, or to the dev channel, run that workflow
+**Going public**
+
+1. Make `wes-key/tf-snag` public. The install task downloads the CLI from its
+   releases, which nobody outside a private repo can reach.
+2. Request **verification** for the publisher from the Marketplace manage page.
+   Microsoft reviews the request, which can take a few days.
+3. Once verified, set repo variable **`EXTENSION_PUBLIC`** to `true`. The next
+   publish — a merged extension PR, or the workflow run by hand — goes public.
+
+**By hand** — run **Publish ADO extension**
 (`.github/workflows/publish-extension.yml`) from the Actions tab:
 
-- `channel: prod` → the `tf-snag-tab` id teams install; `channel: dev` →
-  a separate `tf-snag-tab-dev` id (via `configs/dev.json`), with its own task ids
-  and `-dev` task names (via `tools/stamp-tasks.js`), so you can iterate without
-  bumping the version teams have installed.
+- `channel: dev` → a separate `tf-snag-tab-dev` id (via `configs/dev.json`),
+  with its own task ids and `-dev` task names (via `tools/stamp-tasks.js`), so
+  you can try a change on a real pipeline before merging it. Nothing publishes to
+  dev automatically.
+- `channel: prod` → the same publish a merge does, for when one failed.
 - `dry_run: true` → builds the `.vsix` and uploads it as a run artifact without
   publishing.
-- Version published is `0.<minor>.<patch>`: minor from the manifest, patch one
-  past the newest the Marketplace already has for that channel
-  (`tools/next-version.js`). Bump the minor in `vss-extension.json` for a
-  deliberate step. The major stays `0` — pipelines reference the tasks as
-  `tf-snag@0`, so it is not the CLI's version.
 
-The workflow shares the extension with `ADO_ORG` on every publish. Install it:
-**Organization settings → Extensions → Shared → tf-snag drift report →
-Install**.
+A private publish is shared with `ADO_ORG`. Install it: **Organization settings →
+Extensions → Shared → tf-snag drift report → Install**.
 
 **Local publish** (fallback — needs the PAT in your shell):
 

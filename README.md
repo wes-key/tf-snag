@@ -1,9 +1,20 @@
-# tf-snag
+<p align="center">
+  <img src=".github/assets/logo.png" width="128" height="128" alt="tf-snag logo: a magnifying glass with an amber lens showing a ~ change marker">
+</p>
 
-[![CI](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml/badge.svg)](https://github.com/wes-key/tf-snag/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/wes-key/b87c43da7b1a3f74ed71c32a47ebea47/raw/tf-snag-release.json)](https://github.com/wes-key/tf-snag/releases/latest)
-[![Go](https://img.shields.io/badge/go-1.23-00ADD8?logo=go&logoColor=white)](go.mod)
-[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+<h1 align="center">tf-snag</h1>
+
+<p align="center">
+  <strong>Terraform drift and deprecation detection</strong><br>
+  A CLI with optional Azure DevOps integration
+</p>
+
+<p align="center">
+  <a href="https://github.com/wes-key/tf-snag/actions/workflows/ci.yml"><img src="https://github.com/wes-key/tf-snag/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/wes-key/tf-snag/releases/latest"><img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/wes-key/b87c43da7b1a3f74ed71c32a47ebea47/raw/tf-snag-release.json" alt="Release"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/go-1.23-00ADD8?logo=go&logoColor=white" alt="Go 1.23"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
+</p>
 
 tf-snag reads the plan Terraform already produced and tells you which resources
 changed **outside Terraform**: the storage account someone loosened in the

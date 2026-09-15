@@ -1,23 +1,27 @@
-# Cuts a stable tf-snag release when a labelled PR is merged into main.
+# Releases what a PR merged into main changed: the tf-snag CLI, the Azure DevOps
+# extension, or both.
 #
-# Label the PR with exactly one of
+# CLI - label the PR with exactly one of
 #
 #   release:patch   v1.2.3 -> v1.2.4   fixes
 #   release:minor   v1.2.3 -> v1.3.0   new flags, inputs, report fields
 #   release:major   v1.2.3 -> v2.0.0   anything a pipeline has to change for
 #
 # and merging it tags the merge commit, builds and publishes the GitHub Release
-# (build-release.yml), publishes the Azure DevOps extension to the prod channel
-# (publish-extension.yml), moves the README's release badge and comments the
-# version back on the PR. A PR without a release label merges without releasing
-# anything.
+# (build-release.yml) and moves the README's release badge. No label, no CLI
+# release. The bump is taken from the newest stable vX.Y.Z tag; pre-release tags
+# (vX.Y.Z-dev.N, pushed by hand - see ci.yml) are ignored.
 #
-# The bump is taken from the newest stable vX.Y.Z tag; pre-release tags
-# (vX.Y.Z-dev.N, pushed by hand - see ci.yml) are ignored. With no stable tag
-# yet the base is v0.0.0, so the first release:major is v1.0.0.
+# Extension - no label needed. If the PR touched anything that goes into the
+# package (see EXTENSION_PATHS), merging it publishes the extension to the prod
+# channel (publish-extension.yml). With a CLI release in the same PR the
+# extension waits for it: the install task defaults to the newest stable release,
+# so the tasks must never reach agents before the binary they install.
+#
+# Either way the PR gets a comment saying what was released.
 #
 # To release without a PR, run this workflow from the Actions tab on main and
-# pick the bump there.
+# pick what to release there.
 
 name: Release
 
@@ -28,105 +32,144 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Which part of the version to bump"
+        description: "CLI: which part of the version to bump (none: no CLI release)"
         type: choice
-        options: [patch, minor, major]
-        default: patch
+        options: [none, patch, minor, major]
+        default: none
+      extension:
+        description: "Publish the extension to prod"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 # One release at a time: two PRs merged back to back must not both read the same
-# latest tag and try to cut the same version.
+# latest tag, or the same Marketplace version, and try to publish it twice.
 concurrency:
   group: release
   cancel-in-progress: false
 
+env:
+  # What goes into the .vsix (vss-extension.json "files" and "content"), so a
+  # change here is a change teams would install. tools/, dev/ and configs/ are
+  # not packaged into prod, and the READMEs (extension/, extension/tasks/) are
+  # developer documentation.
+  EXTENSION_PATHS: >-
+    ^extension/(tab/|tasks/[^/]+/|images/|vss-extension\.json$|overview\.md$|package(-lock)?\.json$)
+
 jobs:
-  version:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.merged &&
-       (contains(github.event.pull_request.labels.*.name, 'release:patch') ||
-        contains(github.event.pull_request.labels.*.name, 'release:minor') ||
-        contains(github.event.pull_request.labels.*.name, 'release:major')))
+  plan:
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.next.outputs.tag }}
-      previous: ${{ steps.next.outputs.previous }}
-      ref: ${{ steps.next.outputs.ref }}
+      cli: ${{ steps.plan.outputs.cli }}
+      tag: ${{ steps.plan.outputs.tag }}
+      previous: ${{ steps.plan.outputs.previous }}
+      extension: ${{ steps.plan.outputs.extension }}
+      ref: ${{ steps.plan.outputs.ref }}
     steps:
-      - name: Resolve the next version
-        id: next
+      - name: Work out what to release
+        id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           EVENT: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
           DISPATCH_BUMP: ${{ inputs.bump }}
+          DISPATCH_EXTENSION: ${{ inputs.extension }}
+          PR: ${{ github.event.pull_request.number }}
           LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
           SHA: ${{ github.event.pull_request.merge_commit_sha || github.sha }}
         run: |
           set -eu -o pipefail
           if [ "$EVENT" = workflow_dispatch ]; then
             if [ "$REF_NAME" != main ]; then
-              echo "::error::stable releases are cut from main only (this run is on $REF_NAME)"
+              echo "::error::releases are cut from main only (this run is on $REF_NAME)"
               exit 1
             fi
             bump="$DISPATCH_BUMP"
+            extension="$DISPATCH_EXTENSION"
           else
             bumps=$(jq -r '.[] | select(startswith("release:")) | ltrimstr("release:")' <<<"$LABELS")
-            if [ "$(wc -l <<<"$bumps")" -ne 1 ]; then
+            if [ "$(grep -c . <<<"$bumps" || true)" -gt 1 ]; then
               echo "::error::the PR has more than one release label ($(tr '\n' ' ' <<<"$bumps")) - keep exactly one"
               exit 1
             fi
-            bump="$bumps"
+            bump="${bumps:-none}"
+
+            # Fetched separately so an API failure fails the run, rather than
+            # reading as "nothing in the extension changed".
+            files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+            if grep -qE "$EXTENSION_PATHS" <<<"$files"; then
+              extension=true
+              echo "Extension files changed:" >> "$GITHUB_STEP_SUMMARY"
+              grep -E "$EXTENSION_PATHS" <<<"$files" | sed 's/^/- /' >> "$GITHUB_STEP_SUMMARY"
+            else
+              extension=false
+            fi
           fi
 
-          # Fetched separately so an API failure fails the run, rather than reading
-          # as "no stable release yet" and cutting a v1.0.0.
-          tags=$(gh api "repos/$REPO/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
-          previous=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" | sort -V | tail -n1 || true)
-          IFS=. read -r major minor patch <<<"${previous#v}"
-          major=${major:-0} minor=${minor:-0} patch=${patch:-0}
-          case "$bump" in
-            major) major=$((major + 1)) minor=0 patch=0 ;;
-            minor) minor=$((minor + 1)) patch=0 ;;
-            patch) patch=$((patch + 1)) ;;
-            *) echo "::error::unknown bump '$bump'"; exit 1 ;;
-          esac
-          tag="v$major.$minor.$patch"
-
-          if gh api "repos/$REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
-            echo "::error::tag $tag already exists"
-            exit 1
+          cli=false tag="" previous=""
+          if [ "$bump" != none ]; then
+            cli=true
+            # Fetched separately so an API failure fails the run, rather than
+            # reading as "no stable release yet" and cutting a v1.0.0.
+            tags=$(gh api "repos/$REPO/git/matching-refs/tags/v" --paginate --jq '.[].ref | ltrimstr("refs/tags/")')
+            previous=$(grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' <<<"$tags" | sort -V | tail -n1 || true)
+            IFS=. read -r major minor patch <<<"${previous#v}"
+            major=${major:-0} minor=${minor:-0} patch=${patch:-0}
+            case "$bump" in
+              major) major=$((major + 1)) minor=0 patch=0 ;;
+              minor) minor=$((minor + 1)) patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+              *) echo "::error::unknown bump '$bump'"; exit 1 ;;
+            esac
+            tag="v$major.$minor.$patch"
+            if gh api "repos/$REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "::error::tag $tag already exists"
+              exit 1
+            fi
           fi
 
-          echo "${previous:-no stable release yet} -> $tag ($bump) on $SHA" | tee -a "$GITHUB_STEP_SUMMARY"
           {
+            echo "CLI: ${tag:-no release} ${previous:+(from $previous)}"
+            echo "Extension: $([ "$extension" = true ] && echo "publish to prod" || echo "no change")"
+            echo "Commit: $SHA"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "cli=$cli"
             echo "tag=$tag"
             echo "previous=$previous"
+            echo "extension=$extension"
             echo "ref=$SHA"
           } >> "$GITHUB_OUTPUT"
 
   build:
-    needs: version
+    needs: plan
+    if: needs.plan.outputs.cli == 'true'
     permissions:
       contents: write
     uses: ./.github/workflows/build-release.yml
     with:
-      tag: ${{ needs.version.outputs.tag }}
-      ref: ${{ needs.version.outputs.ref }}
-      notes_start_tag: ${{ needs.version.outputs.previous }}
+      tag: ${{ needs.plan.outputs.tag }}
+      ref: ${{ needs.plan.outputs.ref }}
+      notes_start_tag: ${{ needs.plan.outputs.previous }}
 
-  # The CLI release goes out first: the prod install task defaults to the newest
-  # stable release, so the tasks must never reach agents before a binary does.
+  # Waits for the CLI release when there is one, and runs without it when there
+  # is not - but never after a CLI release that failed.
   extension:
-    needs: build
+    needs: [plan, build]
+    if: >-
+      always() &&
+      needs.plan.result == 'success' &&
+      needs.plan.outputs.extension == 'true' &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped')
     uses: ./.github/workflows/publish-extension.yml
     with:
       channel: prod
       dry_run: false
+      ref: ${{ needs.plan.outputs.ref }}
     secrets: inherit
 
   # The README's release badge. shields.io reads GitHub anonymously, so it cannot
@@ -136,15 +179,15 @@ jobs:
   # Needs repo variable GIST_ID (the gist holding tf-snag-release.json) and
   # secret GIST_TOKEN (a fine-grained PAT with account permission Gists: write).
   badge:
-    needs: [version, build]
+    needs: [plan, build]
     if: vars.GIST_ID != ''
     runs-on: ubuntu-latest
     steps:
-      - name: Point the release badge at ${{ needs.version.outputs.tag }}
+      - name: Point the release badge at ${{ needs.plan.outputs.tag }}
         env:
           GH_TOKEN: ${{ secrets.GIST_TOKEN }}
           GIST_ID: ${{ vars.GIST_ID }}
-          TAG: ${{ needs.version.outputs.tag }}
+          TAG: ${{ needs.plan.outputs.tag }}
         run: |
           set -eu -o pipefail
           if [ -z "$GH_TOKEN" ]; then
@@ -157,8 +200,12 @@ jobs:
           echo "badge now reads $TAG"
 
   comment:
-    needs: [version, build]
-    if: github.event_name == 'pull_request'
+    needs: [plan, build, extension]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      needs.plan.result == 'success' &&
+      (needs.plan.outputs.cli == 'true' || needs.plan.outputs.extension == 'true')
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -168,7 +215,28 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
-          TAG: ${{ needs.version.outputs.tag }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLI: ${{ needs.plan.outputs.cli }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          BUILD: ${{ needs.build.result }}
+          EXTENSION: ${{ needs.plan.outputs.extension }}
+          EXTENSION_RESULT: ${{ needs.extension.result }}
+          EXTENSION_VERSION: ${{ needs.extension.outputs.version }}
         run: |
-          gh pr comment "$PR" -R "$REPO" \
-            --body "Released in [$TAG](https://github.com/$REPO/releases/tag/$TAG)."
+          set -eu
+          lines=()
+          if [ "$CLI" = true ]; then
+            if [ "$BUILD" = success ]; then
+              lines+=("- CLI: released [$TAG](https://github.com/$REPO/releases/tag/$TAG)")
+            else
+              lines+=("- CLI: **$TAG failed to release** ([run]($RUN))")
+            fi
+          fi
+          if [ "$EXTENSION" = true ]; then
+            case "$EXTENSION_RESULT" in
+              success) lines+=("- Extension: published v$EXTENSION_VERSION to the Marketplace") ;;
+              skipped) lines+=("- Extension: **not published**, because the CLI release failed ([run]($RUN))") ;;
+              *)       lines+=("- Extension: **publish failed** ([run]($RUN))") ;;
+            esac
+          fi
+          gh pr comment "$PR" -R "$REPO" --body "$(printf '%s\n' "${lines[@]}")"

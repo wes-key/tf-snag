@@ -15,7 +15,16 @@
     "default": "images/logo.png"
   },
   "content": {
-    "details": { "path": "README.md" }
+    "details": { "path": "overview.md" }
+  },
+  "repository": {
+    "type": "git",
+    "uri": "https://github.com/wes-key/tf-snag"
+  },
+  "links": {
+    "getstarted": { "uri": "https://github.com/wes-key/tf-snag/blob/main/extension/tasks/README.md" },
+    "license": { "uri": "https://github.com/wes-key/tf-snag/blob/main/LICENSE" },
+    "support": { "uri": "https://github.com/wes-key/tf-snag/issues" }
   },
   "scopes": ["vso.build"],
   "files": [
