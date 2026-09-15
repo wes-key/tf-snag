@@ -11,6 +11,8 @@
 
 <p align="center">
   <a href="https://github.com/wes-key/tf-snag/actions/workflows/ci.yml"><img src="https://github.com/wes-key/tf-snag/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/wes-key/tf-snag/actions/workflows/security.yml"><img src="https://github.com/wes-key/tf-snag/actions/workflows/security.yml/badge.svg" alt="Security"></a>
+  <a href="https://github.com/wes-key/tf-snag/actions/workflows/github-code-scanning/codeql"><img src="https://github.com/wes-key/tf-snag/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL"></a>
   <a href="https://github.com/wes-key/tf-snag/releases/latest"><img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/wes-key/b87c43da7b1a3f74ed71c32a47ebea47/raw/tf-snag-release.json" alt="Release"></a>
   <a href="go.mod"><img src="https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white" alt="Go 1.27"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
