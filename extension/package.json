@@ -13,7 +13,7 @@
     "publish:dev": "tfx extension publish --manifest-globs vss-extension.json --overrides-file configs/dev.json"
   },
   "devDependencies": {
-    "tfx-cli": "^0.21.1",
+    "tfx-cli": "^0.24.1",
     "vss-web-extension-sdk": "^5.141.0"
   }
 }
