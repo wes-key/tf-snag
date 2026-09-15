@@ -14,7 +14,7 @@
   <a href="https://github.com/wes-key/tf-snag/actions/workflows/security.yml"><img src="https://github.com/wes-key/tf-snag/actions/workflows/security.yml/badge.svg" alt="Security"></a>
   <a href="https://github.com/wes-key/tf-snag/actions/workflows/github-code-scanning/codeql"><img src="https://github.com/wes-key/tf-snag/actions/workflows/github-code-scanning/codeql/badge.svg" alt="CodeQL"></a>
   <a href="https://github.com/wes-key/tf-snag/releases/latest"><img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/wes-key/b87c43da7b1a3f74ed71c32a47ebea47/raw/tf-snag-release.json" alt="Release"></a>
-  <a href="go.mod"><img src="https://img.shields.io/badge/go-1.23-00ADD8?logo=go&logoColor=white" alt="Go 1.23"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white" alt="Go 1.27"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT"></a>
 </p>
 
@@ -68,7 +68,7 @@ pending changes from configuration: 1 to add, 0 to change, 1 to destroy
 
 Download `tf-snag` (Linux x64) or `tf-snag.exe` (Windows x64) from the
 [latest release](https://github.com/wes-key/tf-snag/releases/latest), or build
-it with Go 1.23+:
+it with Go 1.27+:
 
 ```sh
 go install github.com/wes-key/tf-snag@latest

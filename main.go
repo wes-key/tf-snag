@@ -88,7 +88,7 @@ func bannerColor(mode string, stderr io.Writer) bool {
 
 // versionLine is a single line identifying the binary, e.g.
 //
-//	tf-snag 0.1.7 (a1b2c3d4e5f6) linux/amd64 go1.23.4
+//	tf-snag 0.1.7 (a1b2c3d4e5f6) linux/amd64 go1.27.1
 func versionLine() string {
 	v := version
 	bi, ok := debug.ReadBuildInfo()

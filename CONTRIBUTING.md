@@ -58,7 +58,7 @@ their own issues and PRs.
 
 ### The CLI (Go)
 
-You need Go 1.23 or later.
+You need Go 1.27 or later.
 
 ```sh
 go vet ./...
