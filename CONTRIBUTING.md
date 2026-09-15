@@ -14,10 +14,6 @@ Every change follows these steps, however small:
 **Every pull request needs an issue.** A PR that has no issue will be asked to
 open one before it gets a review.
 
-With an issue, the problem and the approach get agreed before anyone writes
-code. It also gives the change a number that ties together the branch, the PR
-and the release notes.
-
 - Search the [existing issues](https://github.com/wes-key/tf-snag/issues) first.
 - Use one of the forms: **Bug report** or **Feature request**.
 - For anything bigger than a small fix, wait until the issue has been discussed
