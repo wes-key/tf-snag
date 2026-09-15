@@ -9,6 +9,11 @@
 //	images/logo.png                    128x128, the Marketplace tile
 //	tasks/tf-snag/icon.png              32x32, the drift-check task
 //	tasks/tf-snag-install/icon.png      32x32, the installer task
+//	../.github/assets/logo.png        256x256, the repository README's header
+//
+// The README copy lives outside extension/ so it is not packaged into the
+// .vsix, and is drawn at twice the size the README displays it so it stays sharp
+// on high-density screens.
 //
 // A pipeline task with no icon.png beside its task.json falls back to the
 // generic document-and-gears icon in the step list and the task picker, which is
@@ -72,6 +77,7 @@ func main() {
 		{filepath.Join("images", "logo.png"), 128, magnifier(false)},
 		{filepath.Join("tasks", "tf-snag", "icon.png"), 32, magnifier(true)},
 		{filepath.Join("tasks", "tf-snag-install", "icon.png"), 32, install()},
+		{filepath.Join("..", ".github", "assets", "logo.png"), 256, magnifier(false)},
 	}
 
 	for _, t := range targets {
