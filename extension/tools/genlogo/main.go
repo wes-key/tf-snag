@@ -16,11 +16,12 @@
 // the size Azure DevOps asks for.
 //
 // All three are rounded tiles in a Terraform-purple gradient. The logo and the
-// drift check show a 2x2 grid of resources with one knocked out of its slot and
-// tilted, in amber - drift, in one picture - so a step in the run reads as the
-// same thing as the tab. The installer is a download arrow into an amber tray.
-// The 32x32 drift icon is the same drawing with heavier geometry: at that size
-// thin strokes and narrow gaps are what disappear first.
+// drift check are a magnifying glass with an amber lens, and in it a purple ~ -
+// the marker a Terraform plan puts beside a resource that changed, which is
+// exactly what tf-snag looks for - so a step in the run reads as the same thing
+// as the tab. The installer is a download arrow into an amber tray. The 32x32
+// drift icon is the same drawing with heavier strokes: at that size thin lines
+// are what disappear first.
 //
 // The Marketplace does not allow brand names or marks in a listing's artwork,
 // so nothing here borrows from the Terraform logo beyond its colour.
@@ -59,8 +60,7 @@ type layer struct {
 var (
 	white  = rgb(0xFFFFFF, 1)
 	amber  = rgb(0xFFB547, 1)
-	ghost  = rgb(0xFFFFFF, 0.55) // the empty slot the drifted block left
-	shadow = rgb(0x2A0E55, 0.35)
+	purple = rgb(0x5A2A9C, 1) // the dark end of the tile gradient
 )
 
 func main() {
@@ -69,8 +69,8 @@ func main() {
 		size   int
 		layers []layer
 	}{
-		{filepath.Join("images", "logo.png"), 128, drift(false)},
-		{filepath.Join("tasks", "tf-snag", "icon.png"), 32, drift(true)},
+		{filepath.Join("images", "logo.png"), 128, magnifier(false)},
+		{filepath.Join("tasks", "tf-snag", "icon.png"), 32, magnifier(true)},
 		{filepath.Join("tasks", "tf-snag-install", "icon.png"), 32, install()},
 	}
 
@@ -94,37 +94,27 @@ func tile() layer {
 	}}
 }
 
-// drift is three resources in place, the outline of the slot the fourth one
-// should be in, and that fourth one knocked up and out of it, tilted. The grid
-// sits low and left so the drifted block has room inside the tile.
-func drift(small bool) []layer {
-	left, top, span, gap, radius, strokeWidth := 0.15, 0.31, 0.56, 0.075, 0.035, 0.03
-	dx, dy, tilt := 0.155, -0.155, 16.0
+// magnifier is a white-rimmed amber lens with a handle to the bottom right, and a
+// purple ~ in the lens. small thickens the rim, the handle and the ~ for 32x32,
+// where the 128x128 strokes would blur into the tile.
+func magnifier(small bool) []layer {
+	rim, wave := 0.075, 0.045
 	if small {
-		left, top, span, gap, radius, strokeWidth = 0.12, 0.30, 0.60, 0.10, 0.04, 0.06
-		dx, dy, tilt = 0.14, -0.14, 14
+		rim, wave = 0.10, 0.065
 	}
+	cx, cy, r := 0.45, 0.45, 0.27
 
-	cell := (span - gap) / 2
-	col := [2][2]float64{{left, left + cell}, {left + cell + gap, left + span}}
-	row := [2][2]float64{{top, top + cell}, {top + cell + gap, top + span}}
-
-	// The slot is the top-right cell; the block is that cell moved by (dx, dy)
-	// and turned about its own centre.
-	sx0, sy0, sx1, sy1 := col[1][0], row[0][0], col[1][1], row[0][1]
-	cx, cy := (sx0+sx1)/2+dx, (sy0+sy1)/2+dy
-	block := func(ox, oy float64) shape {
-		return rotate(roundRect(sx0+dx+ox, sy0+dy+oy, sx1+dx+ox, sy1+dy+oy, radius), cx, cy, tilt)
-	}
-
+	// The handle starts inside the rim so the two join without a seam, and is
+	// cut back to the rim's inner edge so its round end does not bulge into the
+	// lens.
+	handle := capsule(cx+0.19, cy+0.19, 0.78, 0.78, rim*1.15)
+	lens := circle(cx, cy, r-rim)
 	return []layer{
 		tile(),
-		{roundRect(col[0][0], row[0][0], col[0][1], row[0][1], radius), solid(white)},
-		{roundRect(col[0][0], row[1][0], col[0][1], row[1][1], radius), solid(white)},
-		{roundRect(col[1][0], row[1][0], col[1][1], row[1][1], radius), solid(white)},
-		{outline(sx0, sy0, sx1, sy1, radius, strokeWidth), solid(ghost)},
-		{block(0.012, 0.025), solid(shadow)},
-		{block(0, 0), solid(amber)},
+		{func(x, y float64) bool { return handle(x, y) && !lens(x, y) }, solid(white)},
+		{circle(cx, cy, r), solid(amber)},
+		{annulus(cx, cy, r-rim, r), solid(white)},
+		{tilde(cx-0.13, cx+0.13, cy, 0.05, wave), solid(purple)},
 	}
 }
 
@@ -155,21 +145,45 @@ func roundRect(x0, y0, x1, y1, r float64) shape {
 	}
 }
 
-// outline is a rounded rectangle's border, w wide, drawn inside its bounds.
-func outline(x0, y0, x1, y1, r, w float64) shape {
-	outer := roundRect(x0, y0, x1, y1, r)
-	inner := roundRect(x0+w, y0+w, x1-w, y1-w, math.Max(r-w, 0))
-	return func(x, y float64) bool { return outer(x, y) && !inner(x, y) }
+// circle is a filled disc centred on (cx, cy).
+func circle(cx, cy, r float64) shape {
+	return func(x, y float64) bool { return (x-cx)*(x-cx)+(y-cy)*(y-cy) <= r*r }
 }
 
-// rotate turns a shape clockwise by deg about (cx, cy).
-func rotate(s shape, cx, cy, deg float64) shape {
-	a := -deg * math.Pi / 180
-	sin, cos := math.Sin(a), math.Cos(a)
+// annulus is a ring centred on (cx, cy) between radii r0 and r1.
+func annulus(cx, cy, r0, r1 float64) shape {
 	return func(x, y float64) bool {
-		dx, dy := x-cx, y-cy
-		return s(cx+dx*cos-dy*sin, cy+dx*sin+dy*cos)
+		d := (x-cx)*(x-cx) + (y-cy)*(y-cy)
+		return d >= r0*r0 && d <= r1*r1
 	}
+}
+
+// capsule is a line from (ax, ay) to (bx, by), r thick either side, with round
+// ends.
+func capsule(ax, ay, bx, by, r float64) shape {
+	return func(x, y float64) bool {
+		dx, dy := bx-ax, by-ay
+		t := clamp(((x-ax)*dx + (y-ay)*dy) / (dx*dx + dy*dy))
+		px, py := ax+t*dx-x, ay+t*dy-y
+		return px*px+py*py <= r*r
+	}
+}
+
+// tilde is one period of a sine wave from x0 to x1 about cy, drawn as a chain of
+// capsules so the stroke keeps an even width through the curves and ends round.
+func tilde(x0, x1, cy, amplitude, r float64) shape {
+	const segments = 48
+	point := func(i int) (float64, float64) {
+		t := float64(i) / segments
+		return x0 + (x1-x0)*t, cy - amplitude*math.Sin(t*2*math.Pi)
+	}
+	parts := make([]shape, 0, segments)
+	for i := 0; i < segments; i++ {
+		ax, ay := point(i)
+		bx, by := point(i + 1)
+		parts = append(parts, capsule(ax, ay, bx, by, r))
+	}
+	return union(parts...)
 }
 
 // polygon is an even-odd fill of the given vertices.
