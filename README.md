@@ -98,6 +98,9 @@ for the full pipeline, or for running the CLI without the extension.
 
 ## Contributing
 
+Every change starts with an issue. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+branch naming, the PR template and how releases are labelled.
+
 ```sh
 go vet ./...
 go test ./...

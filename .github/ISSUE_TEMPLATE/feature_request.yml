@@ -1,0 +1,47 @@
+name: Feature request
+description: Suggest a new check, flag, report format or extension capability.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search the existing issues first. For anything larger than a small change, please wait for
+        the approach to be agreed here before opening a pull request.
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options:
+        - CLI
+        - Azure DevOps pipeline tasks
+        - Azure DevOps run tab
+        - Work items / exceptions register
+        - Teams notifications
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How you would like it to work, e.g. the flag, task input or output you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Workarounds you use now, or other approaches you weighed.
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contributing
+      options:
+        - label: I would like to open a pull request for this
