@@ -1,0 +1,135 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.9.6",
+  "prior_state": {
+    "format_version": "1.0",
+    "terraform_version": "1.9.6",
+    "values": {
+      "root_module": {
+        "resources": [
+          {
+            "address": "azurerm_public_ip.bastion",
+            "mode": "managed",
+            "type": "azurerm_public_ip",
+            "name": "bastion",
+            "provider_name": "registry.terraform.io/hashicorp/azurerm",
+            "values": { "name": "pip-bastion", "sku": "Basic", "allocation_method": "Dynamic" }
+          },
+          {
+            "address": "azurerm_storage_account.legacy",
+            "mode": "managed",
+            "type": "azurerm_storage_account",
+            "name": "legacy",
+            "provider_name": "registry.terraform.io/hashicorp/azurerm",
+            "values": { "name": "stlegacytbc01", "min_tls_version": "TLS1_0" }
+          },
+          {
+            "address": "azurerm_storage_account.data",
+            "mode": "managed",
+            "type": "azurerm_storage_account",
+            "name": "data",
+            "provider_name": "registry.terraform.io/hashicorp/azurerm",
+            "values": { "name": "stdatatbc01", "min_tls_version": "TLS1_0" }
+          }
+        ]
+      }
+    }
+  },
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "azurerm_public_ip.bastion",
+          "mode": "managed",
+          "type": "azurerm_public_ip",
+          "name": "bastion",
+          "provider_name": "registry.terraform.io/hashicorp/azurerm",
+          "values": { "name": "pip-bastion", "sku": "Basic", "allocation_method": "Dynamic" }
+        },
+        {
+          "address": "azurerm_storage_account.data",
+          "mode": "managed",
+          "type": "azurerm_storage_account",
+          "name": "data",
+          "provider_name": "registry.terraform.io/hashicorp/azurerm",
+          "values": { "name": "stdatatbc01", "min_tls_version": "TLS1_2" }
+        },
+        {
+          "address": "data.azurerm_client_config.current",
+          "mode": "data",
+          "type": "azurerm_client_config",
+          "name": "current",
+          "provider_name": "registry.terraform.io/hashicorp/azurerm",
+          "values": { "tenant_id": "00000000-0000-0000-0000-000000000000" }
+        }
+      ],
+      "child_modules": [
+        {
+          "address": "module.network",
+          "resources": [
+            {
+              "address": "module.network.azurerm_public_ip.egress[0]",
+              "mode": "managed",
+              "type": "azurerm_public_ip",
+              "name": "egress",
+              "index": 0,
+              "provider_name": "registry.terraform.io/hashicorp/azurerm",
+              "values": { "name": "pip-egress-0", "sku": "Basic" }
+            },
+            {
+              "address": "module.network.azurerm_public_ip.egress[1]",
+              "mode": "managed",
+              "type": "azurerm_public_ip",
+              "name": "egress",
+              "index": 1,
+              "provider_name": "registry.terraform.io/hashicorp/azurerm",
+              "values": { "name": "pip-egress-1", "sku": "Basic" }
+            }
+          ],
+          "child_modules": [
+            {
+              "address": "module.network.module.firewall",
+              "resources": [
+                {
+                  "address": "module.network.module.firewall.azurerm_public_ip.fw[\"primary\"]",
+                  "mode": "managed",
+                  "type": "azurerm_public_ip",
+                  "name": "fw",
+                  "index": "primary",
+                  "provider_name": "registry.terraform.io/hashicorp/azurerm",
+                  "values": { "name": "pip-fw-primary", "sku": "Standard" }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "resource_changes": [
+    {
+      "address": "azurerm_storage_account.data",
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "data",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["update"],
+        "before": { "name": "stdatatbc01", "min_tls_version": "TLS1_0" },
+        "after": { "name": "stdatatbc01", "min_tls_version": "TLS1_2" }
+      }
+    },
+    {
+      "address": "azurerm_storage_account.legacy",
+      "mode": "managed",
+      "type": "azurerm_storage_account",
+      "name": "legacy",
+      "provider_name": "registry.terraform.io/hashicorp/azurerm",
+      "change": {
+        "actions": ["delete"],
+        "before": { "name": "stlegacytbc01", "min_tls_version": "TLS1_0" },
+        "after": null
+      }
+    }
+  ]
+}
