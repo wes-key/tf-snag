@@ -126,11 +126,30 @@ jobs:
           # when it stalls, so a bare status code is the difference between "the
           # token is dead" (401), "this extension has never been published"
           # (404) and "the Marketplace is not answering" (a hang here too).
+          # curl already writes 000 to %{http_code} when it never got a response,
+          # so no || fallback here: adding one concatenates a second 000 and the
+          # case below stops matching (which is exactly what happened).
           probe=$(mktemp)
-          code=$(curl -sS -m 30 -o "$probe" -w '%{http_code}' -u ":$TFX_PAT" \
-            "https://marketplace.visualstudio.com/_apis/gallery/publishers/$publisher/extensions/$id?api-version=7.1-preview.1" \
-            || echo "000")
+          api="https://marketplace.visualstudio.com/_apis/gallery/publishers/$publisher/extensions/$id?api-version=7.1-preview.1"
+          code=$(curl -sS -m 30 -o "$probe" -w '%{http_code}' -u ":$TFX_PAT" "$api" || true)
           echo "gallery API for $publisher.$id -> HTTP $code"
+
+          # A runner that cannot reach the Marketplace at all looks identical to
+          # a hung API from inside tfx, so pin down which it is before retrying.
+          # IPv4 is tried explicitly: a AAAA record the runner cannot route is a
+          # standard cause of a connect that never returns.
+          if [ "$code" = 000 ]; then
+            echo "connectivity check:"
+            echo "  DNS: $(getent hosts marketplace.visualstudio.com | tr '\n' ' ' || echo 'no answer')"
+            v4=$(curl -4 -sS -m 20 -o /dev/null -w '%{http_code}' "https://marketplace.visualstudio.com/_apis/public/gallery/extensionquery" -X POST -H 'Content-Type: application/json' -H 'Accept: application/json;api-version=3.0-preview.1' -d '{"filters":[{"criteria":[]}],"flags":0}' || true)
+            echo "  public gallery API over IPv4: HTTP $v4"
+            if [ "$v4" = 000 ]; then
+              echo "::error::this runner cannot reach marketplace.visualstudio.com (no response over IPv4 either). That is a network problem outside this repo - check https://www.githubstatus.com and https://status.dev.azure.com, then re-run."
+            else
+              echo "::error::the publisher API did not respond, but the public gallery API did over IPv4. Re-run; if it persists, publish from an Azure DevOps pipeline instead, or set NODE_OPTIONS=--dns-result-order=ipv4first for the tfx steps."
+            fi
+            exit 1
+          fi
           case "$code" in
             # 302/203 are how Azure DevOps refuses an expired or unscoped PAT:
             # it redirects to an interactive sign-in page rather than returning
@@ -146,10 +165,6 @@ jobs:
               echo "::notice::$publisher.$id is not on the Marketplace yet - publishing 0.${minor}.0"
               echo "version=0.${minor}.0" >> "$GITHUB_OUTPUT"
               exit 0
-              ;;
-            000)
-              echo "::error::could not reach the Marketplace gallery API at all (curl failed or timed out)"
-              exit 1
               ;;
             200) ;;
             *)
