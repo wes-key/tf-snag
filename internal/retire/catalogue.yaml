@@ -1,0 +1,204 @@
+# Azure retirement catalogue.
+#
+# Each entry says what is retiring, when, and how to spot it in a Terraform
+# plan. tf-snag ships this file inside the binary and makes no network call to
+# check it, so `updated` is how fresh a clean report actually is.
+#
+# Rules for an entry:
+#   - id          stable forever: ignore rules, work items and baselines key on
+#                 it. Add a new entry rather than repurposing an old id.
+#   - retires_on  the date Microsoft states, YYYY-MM-DD, from the linked page.
+#   - url         official Microsoft page stating that date, so a reader can
+#                 check the finding rather than take our word for it.
+#   - match       attribute names as the azurerm provider writes them. Nested
+#                 blocks are dotted paths (sku.tier); a bare value means equals,
+#                 {in: [...]} a set, {not: value} a negation. No attributes at
+#                 all means the whole resource type is retiring.
+#
+# Every entry needs a test in retire_test.go that proves it matches an affected
+# resource and leaves an unaffected one alone: a false positive here tells
+# someone their production estate is dying.
+
+updated: 2026-09-16
+
+# Not in this catalogue, and why - so nobody researches them twice:
+#   * VPN Gateway Basic SKU. Microsoft's legacy-SKU page says it is NOT
+#     retiring; what retires is the Basic public IP attached to it, which
+#     azure-public-ip-basic-sku already covers.
+#   * MySQL/PostgreSQL Single Server, App Service Environment v1/v2, Data Lake
+#     Storage Gen1, monitor log profiles. Retired, but azurerm dropped the
+#     resources in v4, so no v4 plan can contain them.
+#   * API Management stv1, Automation Run As accounts. Retired, but a plan
+#     carries nothing that tells stv1 from stv2.
+#   * Storage GPv1 (account_kind: Storage), Cosmos DB for MongoDB 3.x, CDN
+#     Standard_Akamai. Legacy, but Microsoft has announced no date, and an
+#     entry with no retires_on is an opinion, not a retirement.
+#
+# Known blind spot: a VMSS instance public IP configuration is not a
+# Microsoft.Network/publicIPAddresses resource, so it never appears as an
+# azurerm_public_ip. A clean retirements report is not proof of full coverage.
+
+retirements:
+  - id: azure-public-ip-basic-sku
+    title: Basic SKU public IP addresses retire
+    retires_on: 2025-09-30
+    announced: 2021-09-30
+    url: https://learn.microsoft.com/en-us/azure/virtual-network/ip-services/public-ip-basic-upgrade-guidance
+    severity: high
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_public_ip
+      attributes:
+        sku: Basic
+    remediation: >-
+      Move to Standard SKU. Basic cannot be upgraded in place while attached, so
+      set the address to static, detach it, upgrade, then reattach.
+
+  - id: azure-lb-basic-sku
+    title: Basic SKU load balancers retire
+    retires_on: 2025-09-30
+    url: https://learn.microsoft.com/en-us/azure/load-balancer/load-balancer-basic-upgrade-guidance
+    severity: high
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_lb
+      attributes:
+        sku: Basic
+    remediation: >-
+      Migrate with the AzureBasicLoadBalancerUpgrade PowerShell module. It is
+      one-way and needs a maintenance window, and every public IP on the load
+      balancer and its backend must move to Standard with it.
+
+  - id: azure-application-gateway-v1
+    title: Application Gateway and WAF v1 retire
+    retires_on: 2026-04-28
+    announced: 2023-04-28
+    url: https://learn.microsoft.com/en-us/azure/application-gateway/v1-retirement
+    severity: high
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_application_gateway
+      # tier, not name: "Basic" is a newer low-cost v2-family SKU, and matching
+      # on name would flag it as v1.
+      attributes:
+        sku.tier: {in: [Standard, WAF]}
+    remediation: >-
+      Migrate to Standard_v2 or WAF_v2 with Microsoft's migration script. Azure
+      blocks the data path and deletes remaining v1 deployments.
+
+  - id: azure-aks-basic-load-balancer
+    title: AKS no longer supports Basic Load Balancer
+    retires_on: 2025-09-30
+    url: https://learn.microsoft.com/en-us/azure/aks/upgrade-basic-load-balancer-on-aks
+    severity: high
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_kubernetes_cluster
+      attributes:
+        network_profile.load_balancer_sku: basic
+    remediation: >-
+      Set load_balancer_sku = "standard". Terraform replaces the cluster when it
+      changes, so migrate workloads rather than applying in place.
+
+  - id: azure-vpn-gateway-legacy-sku
+    title: VPN Gateway Standard and HighPerformance SKUs are deprecated
+    retires_on: 2026-06-30
+    url: https://learn.microsoft.com/en-us/azure/vpn-gateway/vpn-gateway-about-skus-legacy
+    severity: high
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_virtual_network_gateway
+      attributes:
+        sku: {in: [Standard, HighPerformance]}
+    remediation: >-
+      Migrate to a current SKU: Standard becomes VpnGw1AZ and HighPerformance
+      becomes VpnGw2AZ. The gateway's Basic public IP moves with it.
+
+  - id: azure-storage-min-tls
+    title: Azure Storage stops accepting TLS 1.0 and 1.1
+    retires_on: 2026-02-03
+    url: https://learn.microsoft.com/en-us/azure/storage/common/transport-layer-security-configure-migrate-to-tls2
+    severity: high
+    # azurerm v5 narrows min_tls_version to TLS1_2 alone, so this entry is for
+    # estates still on v4 or earlier.
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_storage_account
+      attributes:
+        min_tls_version: {in: [TLS1_0, TLS1_1]}
+    remediation: >-
+      Set min_tls_version = "TLS1_2", after checking storage logs for clients
+      still negotiating 1.0 or 1.1. The setting covers blobs, files, queues and
+      tables on the account.
+
+  - id: azure-log-analytics-agent
+    title: Log Analytics agent (MMA/OMS) is retired
+    retires_on: 2024-08-31
+    url: https://learn.microsoft.com/en-us/azure/azure-monitor/agents/azure-monitor-agent-migration
+    severity: high
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_virtual_machine_extension
+      attributes:
+        publisher: Microsoft.EnterpriseCloud.Monitoring
+        type: {in: [MicrosoftMonitoringAgent, OmsAgentForLinux]}
+    remediation: >-
+      Replace with the Azure Monitor Agent extension (AzureMonitorWindowsAgent
+      or AzureMonitorLinuxAgent) and the data collection rules it needs.
+
+  - id: azure-cdn-edgio
+    title: Azure CDN from Edgio (Verizon) has shut down
+    retires_on: 2025-01-15
+    url: https://learn.microsoft.com/en-us/azure/cdn/edgio-retirement-faq
+    severity: high
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_cdn_profile
+      attributes:
+        sku: {in: [Standard_Verizon, Premium_Verizon]}
+    remediation: >-
+      The platform is gone, so this profile serves nothing. Move the workload to
+      Azure Front Door Standard or Premium and delete the profile from config.
+
+  - id: azure-front-door-classic
+    title: Azure Front Door (classic) retires
+    retires_on: 2027-03-31
+    url: https://learn.microsoft.com/en-us/azure/frontdoor/classic-retirement-faq
+    severity: high
+    provider_min_version: "3.0"
+    # No attributes: every azurerm_frontdoor is a classic profile.
+    match:
+      type: azurerm_frontdoor
+    remediation: >-
+      Migrate to Front Door Standard or Premium (azurerm_cdn_frontdoor_profile
+      and friends) with the zero-downtime tier migration tool.
+
+  - id: azure-cdn-classic-microsoft
+    title: Azure CDN Standard from Microsoft (classic) retires
+    retires_on: 2027-09-30
+    url: https://learn.microsoft.com/en-us/azure/cdn/classic-cdn-retirement-faq
+    severity: medium
+    provider_min_version: "3.0"
+    match:
+      type: azurerm_cdn_profile
+      attributes:
+        sku: {in: [Standard_Microsoft, Standard_ChinaCdn]}
+    remediation: >-
+      Migrate the profile to Azure Front Door Standard or Premium. Classic
+      profiles already cannot be created or take new custom domains.
+
+  - id: azure-redis-cache-tiers
+    title: Azure Cache for Redis Basic, Standard and Premium tiers retire
+    retires_on: 2028-09-30
+    url: https://learn.microsoft.com/en-us/azure/azure-cache-for-redis/retirement-faq
+    severity: medium
+    provider_min_version: "3.0"
+    # Every tier azurerm_redis_cache can hold is on the list, so this matches
+    # every cache - which is what Microsoft announced.
+    match:
+      type: azurerm_redis_cache
+      attributes:
+        sku_name: {in: [Basic, Standard, Premium]}
+    remediation: >-
+      Plan a move to Azure Managed Redis. The date is far off, but new work
+      should not add caches on a retiring tier.
