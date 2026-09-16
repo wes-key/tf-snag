@@ -4,13 +4,14 @@
  *   ##vso[task.addattachment type=tf-snag.report;name=tf-snag;]<file>
  * and renders it. Report shape is owned by internal/report/report.go
  * (Report.Schema == SCHEMA_SUPPORTED here). Schema 2 adds deprecations,
+ * schema 3 adds retirements,
  * ignore-rule suppression, and baseline provenance (first_seen / new).
  */
 (function () {
   "use strict";
 
   var ATTACHMENT_TYPE = "tf-snag.report";
-  var SCHEMA_SUPPORTED = 2;
+  var SCHEMA_SUPPORTED = 3;
 
   var SIGN = { create: "+", update: "~", delete: "−", replace: "±", read: " ", "no-op": " " };
 
@@ -194,6 +195,11 @@
     var activeDeps = deps.filter(notSuppressed).sort(byFindingRank);
     var ignoredDrift = drift.filter(isSuppressed);
     var ignoredDeps = deps.filter(isSuppressed);
+    // Retirements arrive soonest-first from the CLI, and that order is the
+    // point: the tab should read as a deadline list, not an alphabet.
+    var rets = report.retirements || [];
+    var activeRets = rets.filter(notSuppressed);
+    var ignoredRets = rets.filter(isSuppressed);
     var linker = fileLinker(build);
 
     var gating = activeDrift.length + activeDeps.length;
@@ -233,6 +239,31 @@
       }));
     }
 
+    var retirePanel = el("div", null, [
+      section("Retirements", activeRets, {
+        headers: ["Retiring", "Resources", "Date"],
+        emptyText: report.retirement_catalogue
+          ? "Nothing in this estate is on a published retirement notice."
+          : "The retirements check did not run for this pipeline (-check retirements).",
+        row: retireRowFn(linker)
+      })
+    ]);
+    if (ignoredRets.length) {
+      retirePanel.appendChild(collapsedSection("Ignored retirements", ignoredRets, {
+        headers: ["Retiring", "Resources", "Reason"],
+        row: ignoredRetireRowFn(linker)
+      }));
+    }
+    // A catalogue too old to trust turns an empty panel from a result into an
+    // assumption, so the tab says so rather than letting it read as clean.
+    var cat = report.retirement_catalogue;
+    if (cat && cat.stale) {
+      retirePanel.appendChild(el("div", { class: "tfd-muted tfd-cat-stale" }, [
+        document.createTextNode("Retirement catalogue (" + (cat.source || "built-in") + ") last updated " +
+          (cat.updated || "unknown") + ", " + (cat.age_days || 0) + " days ago: it may be missing newer notices.")
+      ]));
+    }
+
     var pendingPanel = el("div", null, [
       section("Pending changes from configuration", pending, {
         headers: ["Resource", "Module", "Change"],
@@ -245,11 +276,17 @@
       })
     ]);
 
-    r.appendChild(tabView([
+    var tabs = [
       { label: "Drift", count: activeDrift.length, body: driftPanel },
-      { label: "Deprecations", count: activeDeps.length, body: deprPanel },
-      { label: "Pending changes", count: pending.length, body: pendingPanel }
-    ]));
+      { label: "Deprecations", count: activeDeps.length, body: deprPanel }
+    ];
+    // Only when the check ran: an empty Retirements tab on every pipeline that
+    // never asked for them would read as a clean bill of health.
+    if (report.retirement_catalogue || rets.length) {
+      tabs.push({ label: "Retirements", count: activeRets.length, body: retirePanel });
+    }
+    tabs.push({ label: "Pending changes", count: pending.length, body: pendingPanel });
+    r.appendChild(tabView(tabs));
 
     resize();
   }
@@ -714,6 +751,78 @@
         sign: deprSign(sev),
         primary: el("strong", { text: d.summary || "Deprecated" }),
         cells: [deprFirstResource(d), d.suppress_reason || "no reason given"],
+        detail: detail
+      };
+    };
+  }
+
+  // --- retirements ------------------------------------------------
+
+  // A retirement is one row per catalogue entry, with its affected resources in
+  // the detail: the decision is singular however many resources carry it.
+  function retireDetail(linker, rt) {
+    var body = el("div", { class: "tfd-detail-body" });
+    if (rt.remediation) body.appendChild(el("div", { class: "tfd-depr-detail", text: rt.remediation }));
+    var instances = rt.instances || [];
+    if (instances.length) {
+      var ul = el("ul", { class: "tfd-depr-sites" });
+      instances.forEach(function (item) {
+        var kids = [el("code", { text: item.address || "(unknown)" })];
+        var loc = locNode(linker, item.file, item.line);
+        if (loc) { kids.push(document.createTextNode("  ")); kids.push(loc); }
+        ul.appendChild(el("li", null, kids));
+      });
+      body.appendChild(ul);
+    }
+    if (rt.url) {
+      body.appendChild(el("div", null, [
+        el("a", { href: rt.url, target: "_blank", rel: "noopener noreferrer", text: rt.url })
+      ]));
+    }
+    var wi = workItemLine(rt);
+    if (wi) body.appendChild(wi);
+    return body;
+  }
+
+  function retireSign(urgency) {
+    var urgent = urgency === "retired" || urgency === "imminent";
+    return { glyph: urgent ? "✖" : "⚠", cls: "tfd-sev" + (urgent ? " tfd-sev-error" : "") };
+  }
+
+  // The count, not the list: a retirement can match dozens of resources, and
+  // the addresses are one click away in the detail row.
+  function retireResources(rt) {
+    var n = (rt.instances || []).length;
+    return el("code", { text: (rt.resource_type || "resource") + " ×" + n });
+  }
+
+  function retireWhen(rt) {
+    var days = typeof rt.days === "number" ? rt.days : 0;
+    if (days < 0) return "retired " + (-days) + "d ago";
+    if (days === 0) return "today";
+    return "in " + days + "d";
+  }
+
+  function retireRowFn(linker) {
+    return function (rt) {
+      var urgency = (rt.urgency || "scheduled").toLowerCase();
+      return {
+        sign: retireSign(urgency),
+        primary: el("strong", { text: rt.title || rt.id || "Retirement" }),
+        cells: [retireResources(rt), badge(rt.retires_on + " · " + retireWhen(rt), urgency)],
+        detail: retireDetail(linker, rt)
+      };
+    };
+  }
+
+  function ignoredRetireRowFn(linker) {
+    return function (rt) {
+      var detail = retireDetail(linker, rt);
+      detail.appendChild(ruleLine(rt));
+      return {
+        sign: retireSign((rt.urgency || "scheduled").toLowerCase()),
+        primary: el("strong", { text: rt.title || rt.id || "Retirement" }),
+        cells: [retireResources(rt), rt.suppress_reason || "no reason given"],
         detail: detail
       };
     };

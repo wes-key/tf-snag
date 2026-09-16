@@ -481,11 +481,15 @@ func TestWriteSARIFResultShape(t *testing.T) {
 		t.Fatalf("results = %d, want 2", len(run.Results))
 	}
 
-	// Two rules -> two Scans groups: resource-drift then deprecation.
-	if len(run.Tool.Driver.Rules) != 2 ||
-		run.Tool.Driver.Rules[0].ID != "resource-drift" ||
-		run.Tool.Driver.Rules[1].ID != "deprecation" {
-		t.Fatalf("want [resource-drift deprecation] rules, got %+v", run.Tool.Driver.Rules)
+	// One rule per finding kind -> one Scans group each, in this order.
+	want := []string{"resource-drift", "deprecation", "retirement"}
+	if len(run.Tool.Driver.Rules) != len(want) {
+		t.Fatalf("want %v rules, got %+v", want, run.Tool.Driver.Rules)
+	}
+	for i, id := range want {
+		if run.Tool.Driver.Rules[i].ID != id {
+			t.Fatalf("rule %d = %q, want %q", i, run.Tool.Driver.Rules[i].ID, id)
+		}
 	}
 
 	byMsg := map[string]bool{}

@@ -30,9 +30,12 @@
       "options": {
         "all": "Drift and deprecations",
         "drift": "Drift only",
-        "deprecations": "Deprecations only"
+        "deprecations": "Deprecations only",
+        "all,retirements": "Drift, deprecations and retirements",
+        "drift,retirements": "Drift and retirements",
+        "retirements": "Retirements only"
       },
-      "helpMarkDown": "Deprecations are read from the `terraform plan -json` log, so `all` and `deprecations` need **Plan log** as well as **Plan**."
+      "helpMarkDown": "Deprecations are read from the `terraform plan -json` log, so `all` and `deprecations` need **Plan log** as well as **Plan**.\n\nRetirements cross-reference the plan against tf-snag's catalogue of announced Azure retirement dates. They need **Plan** only and no network access: the catalogue ships inside the CLI."
     },
     {
       "name": "plan",
@@ -40,7 +43,7 @@
       "label": "Plan (terraform show -json output)",
       "defaultValue": "plan.json",
       "required": false,
-      "visibleRule": "checks = all || checks = drift",
+      "visibleRule": "checks = all || checks = drift || checks = retirements || checks = all,retirements || checks = drift,retirements",
       "helpMarkDown": "Written by `terraform show -json tfplan > plan.json`. Relative paths resolve against **Working directory**."
     },
     {
@@ -49,7 +52,7 @@
       "label": "Plan log (terraform plan -json output)",
       "defaultValue": "plan.jsonl",
       "required": false,
-      "visibleRule": "checks = all || checks = deprecations",
+      "visibleRule": "checks = all || checks = deprecations || checks = all,retirements",
       "helpMarkDown": "The NDJSON log from `terraform plan -json`, which is where the deprecation warnings are."
     },
     {
@@ -58,8 +61,17 @@
       "label": "Directory terraform plan ran in",
       "defaultValue": "",
       "required": false,
-      "visibleRule": "checks = all || checks = deprecations",
+      "visibleRule": "checks = all || checks = deprecations || checks = all,retirements",
       "helpMarkDown": "Repo-relative, e.g. `terraform` when the plan ran with `-chdir=terraform`. Prepended to the file locations in the plan log so their links resolve from the repo root."
+    },
+    {
+      "name": "retirementsFailWithin",
+      "type": "string",
+      "label": "Fail only on retirements within (days)",
+      "defaultValue": "",
+      "required": false,
+      "visibleRule": "checks = retirements || checks = all,retirements || checks = drift,retirements",
+      "helpMarkDown": "Leave empty to let every retirement fail the step. Set e.g. `90` to report the rest without failing - useful when adopting the check on an estate with older deadlines."
     },
     {
       "name": "source",
@@ -311,7 +323,7 @@
     {
       "name": "onDrift",
       "type": "pickList",
-      "label": "When drift or a deprecation is found",
+      "label": "When a finding is reported",
       "defaultValue": "warning",
       "required": false,
       "groupName": "advanced",
@@ -333,7 +345,7 @@
     }
   ],
   "outputVariables": [
-    { "name": "driftDetected", "description": "true when drift or a deprecation was reported." },
+    { "name": "driftDetected", "description": "true when drift, a deprecation or a retirement was reported." },
     { "name": "reportJson", "description": "Path of the JSON report." },
     { "name": "reportSarif", "description": "Path of the SARIF report — the next run's baseline." }
   ],

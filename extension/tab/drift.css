@@ -226,6 +226,16 @@ a.tfd-loc:hover { text-decoration: underline; }
    accent fill: white-on-accent went muddy against the dark theme's lighter
    blue, and this keeps every pill in the row visually consistent. */
 .tfd-badge-new      { background: var(--tfd-info-bg);  color: var(--tfd-accent); }
+/* Retirement urgency: a date that has passed or is inside 90 days reads as an
+   error, further-out ones as a warning, so the tab ranks by deadline at a
+   glance rather than by how alarming the wording is. */
+.tfd-badge-retired,
+.tfd-badge-imminent    { background: var(--tfd-err-bg);  color: var(--tfd-del); }
+.tfd-badge-approaching { background: var(--tfd-warn-bg); color: var(--tfd-warn-bd); }
+.tfd-badge-scheduled   { background: var(--tfd-hover);   color: var(--tfd-muted); }
+
+/* Catalogue staleness note under the retirements table. */
+.tfd-cat-stale { margin-top: 12px; font-size: 12px; }
 /* the age sits under a "no longer ignored" badge rather than replacing it: the
    item is newly actionable, the finding is not newly detected */
 .tfd-prov-age { margin-top: 2px; font-size: 11px; }

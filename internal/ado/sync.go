@@ -138,6 +138,25 @@ func (c *Client) Sync(r *report.Report, opts Options, eligible func(FindingKind,
 		}
 		r.Deprecations[i].WorkItem, r.Deprecations[i].WorkItemURL = item.ID, item.URL
 	}
+	for i := range r.Retirements {
+		if r.Retirements[i].Suppressed {
+			ignored[r.Retirements[i].FindingID()] = true
+			continue
+		}
+		f := finding{
+			kind:  KindRetirement,
+			id:    r.Retirements[i].FindingID(),
+			title: retireTitle(r.Retirements[i]),
+			body:  retireBody(r.Retirements[i], opts),
+			tags:  []string{"retirement"},
+		}
+		seen[f.id] = true
+		item, err := c.linkOrCreate(f, existing, opts, eligible, &res, w)
+		if err != nil {
+			return res, err
+		}
+		r.Retirements[i].WorkItem, r.Retirements[i].WorkItemURL = item.ID, item.URL
+	}
 
 	if !opts.Close {
 		return res, nil
@@ -211,6 +230,7 @@ type FindingKind string
 const (
 	KindDrift       FindingKind = "drift"
 	KindDeprecation FindingKind = "deprecation"
+	KindRetirement  FindingKind = "retirement"
 )
 
 type finding struct {
