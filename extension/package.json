@@ -12,8 +12,9 @@
     "publish": "tfx extension publish --manifest-globs vss-extension.json",
     "publish:dev": "tfx extension publish --manifest-globs vss-extension.json --overrides-file configs/dev.json"
   },
+  "_comment_tfx": "tfx-cli is PINNED, not ranged. 0.22+ moves azure-devops-node-api from ^14 to ^17, and on 2026-09-16 every `tfx extension show` against the Marketplace hung until the publish workflow's 60s cap - four attempts, no output, twice in a row. 0.21.3 is the last version that published (dev v0.6.29, 2026-09-15). Re-test a bump against a real publish before taking it.",
   "devDependencies": {
-    "tfx-cli": "^0.24.1",
+    "tfx-cli": "0.21.3",
     "vss-web-extension-sdk": "^5.141.0"
   }
 }
