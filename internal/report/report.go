@@ -249,7 +249,7 @@ func (r *Report) HasGatingFindings() bool {
 			return true
 		}
 	}
-	if gating, _ := r.gatingRetirements(); len(gating) > 0 {
+	if gating, _, _ := r.gatingRetirements(); len(gating) > 0 {
 		return true
 	}
 	return false
@@ -545,7 +545,7 @@ func (r *Report) WriteJUnit(w io.Writer) error {
 	}
 	// One case per retirement, not per instance: the work is "stop using this",
 	// however many resources are on it, and the instances go in the body.
-	rets, ignoredRets := r.gatingRetirements()
+	rets, deferredRets, ignoredRets := r.gatingRetirements()
 	for _, rt := range rets {
 		addrs := make([]string, len(rt.Instances))
 		for i, in := range rt.Instances {
@@ -564,6 +564,14 @@ func (r *Report) WriteJUnit(w io.Writer) error {
 			},
 		})
 	}
+	for _, rt := range deferredRets {
+		suite.Cases = append(suite.Cases, junitCase{
+			Name:      rt.Title,
+			Classname: "tf-snag.retirements",
+			Skipped: &junitSkipped{Message: fmt.Sprintf("%s retires %s (%s) — beyond the %d-day fail window",
+				rt.Type, rt.RetiresOn, rt.When(), r.RetirementGateDays)},
+		})
+	}
 	for _, rr := range ignoredDrift {
 		suite.Cases = append(suite.Cases, junitCase{
 			Name:      rr.Address + moduleSuffix(rr.Module),
@@ -580,7 +588,7 @@ func (r *Report) WriteJUnit(w io.Writer) error {
 	}
 	suite.Tests = len(suite.Cases)
 	suite.Failures = len(drift) + len(rets)
-	suite.Skipped = len(ignoredDrift) + len(ignoredRets)
+	suite.Skipped = len(ignoredDrift) + len(ignoredRets) + len(deferredRets)
 
 	if _, err := io.WriteString(w, xml.Header); err != nil {
 		return err
@@ -684,7 +692,7 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 		}
 	}
 
-	if rets, _ := r.gatingRetirements(); len(rets) > 0 {
+	if rets := r.reportedRetirements(); len(rets) > 0 {
 		bw.printf("\n### Retirements\n\n")
 		bw.printf("| Retiring | Date | Resources |\n|---|---|---|\n")
 		for _, rt := range rets {
@@ -696,8 +704,12 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 			for i, in := range rt.Instances {
 				addrs[i] = "`" + mdCell(in.Address) + "`"
 			}
+			when := rt.When()
+			if rt.Deferred(r.RetirementGateDays) {
+				when += ", beyond the fail window"
+			}
 			bw.printf("| %s | %s _(%s)_ | %s |\n",
-				title, rt.RetiresOn, mdCell(rt.When()), strings.Join(addrs, ", "))
+				title, rt.RetiresOn, mdCell(when), strings.Join(addrs, ", "))
 		}
 		if r.Catalogue != nil && r.Catalogue.Stale {
 			bw.printf("\n_Retirement catalogue (%s) last updated %s, %d days ago: it may be missing newer notices._\n",

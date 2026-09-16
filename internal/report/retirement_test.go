@@ -227,3 +227,41 @@ func TestTeamsCardOmitsRetirementFactWhenCheckDidNotRun(t *testing.T) {
 		t.Errorf("a run that never checked retirements must not claim a count:\n%s", out.String())
 	}
 }
+
+func TestFailWindowNarrowsTheGateButNotTheReport(t *testing.T) {
+	r := withRetirements(t)
+	r.RetirementGateDays = 90
+	r.Retirements[0].Days = 838
+	r.Retirements[0].BeyondFailWindow = r.Retirements[0].Deferred(r.RetirementGateDays)
+
+	if r.HasGatingFindings() {
+		t.Error("a retirement beyond the window must not fail the run")
+	}
+	// ...but it is still news, so every surface still carries it.
+	var text bytes.Buffer
+	if err := r.WriteText(&text); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(text.String(), "beyond the 90-day fail window") {
+		t.Errorf("text report drops the deferred retirement:\n%s", text.String())
+	}
+	var md bytes.Buffer
+	if err := r.WriteMarkdown(&md); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(md.String(), "beyond the fail window") {
+		t.Errorf("markdown drops the deferred retirement:\n%s", md.String())
+	}
+	var junit bytes.Buffer
+	if err := r.WriteJUnit(&junit); err != nil {
+		t.Fatal(err)
+	}
+	// Skipped, not failed: the Tests tab should not show a red case for
+	// something the pipeline deliberately does not gate on.
+	if !strings.Contains(junit.String(), "beyond the 90-day fail window") {
+		t.Errorf("junit drops the deferred retirement:\n%s", junit.String())
+	}
+	if strings.Count(junit.String(), "<failure") != 0 {
+		t.Errorf("junit marks a deferred retirement as a failure:\n%s", junit.String())
+	}
+}

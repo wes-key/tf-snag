@@ -198,6 +198,8 @@ function readInputs() {
   cfg.planLog = cfg.deprecations ? resolve(cfg.cwd, vso.fileInput("planLog") || "plan.jsonl") : "";
   cfg.planLogDir = vso.input("planLogDir");
   cfg.retirementsFailWithin = cfg.retirements ? vso.input("retirementsFailWithin") : "";
+  cfg.retirementsFile = cfg.retirements ? vso.fileInput("retirementsFile") : "";
+  if (cfg.retirementsFile) cfg.retirementsFile = resolve(cfg.cwd, cfg.retirementsFile);
   cfg.source = vso.input("source") || vso.variable("Build.SourcesDirectory");
   cfg.ignoreFile = vso.fileInput("ignoreFile");
   cfg.runURL = vso.input("runUrl") || defaultRunURL();
@@ -300,6 +302,7 @@ function readAzureDevOpsInputs(cfg) {
 function commonArgs(cfg) {
   var args = ["-check", cfg.checks];
   if (cfg.needsPlan) args.push("-plan", cfg.plan);
+  if (cfg.retirementsFile) args.push("-retirements", cfg.retirementsFile);
   if (cfg.retirements && cfg.retirementsFailWithin) {
     args.push("-retirements-fail-within", cfg.retirementsFailWithin);
   }

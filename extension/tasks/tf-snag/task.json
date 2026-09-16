@@ -65,6 +65,15 @@
       "helpMarkDown": "Repo-relative, e.g. `terraform` when the plan ran with `-chdir=terraform`. Prepended to the file locations in the plan log so their links resolve from the repo root."
     },
     {
+      "name": "retirementsFile",
+      "type": "filePath",
+      "label": "Retirement catalogue",
+      "defaultValue": "",
+      "required": false,
+      "visibleRule": "checks = retirements || checks = all,retirements || checks = drift,retirements",
+      "helpMarkDown": "Leave empty to use the catalogue built into tf-snag. A file here **replaces** it, for your own deadlines or to pin a catalogue in an air-gapped environment."
+    },
+    {
       "name": "retirementsFailWithin",
       "type": "string",
       "label": "Fail only on retirements within (days)",

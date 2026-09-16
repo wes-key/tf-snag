@@ -26,8 +26,12 @@ type Retirement struct {
 	// against the time of the run rather than stored in the catalogue.
 	Urgency string `json:"urgency"`
 	// Days until retirement, negative once the date has passed.
-	Days      int                  `json:"days"`
-	Instances []RetirementInstance `json:"instances,omitempty"`
+	Days int `json:"days"`
+	// BeyondFailWindow marks a finding -retirements-fail-within excludes from
+	// the gate. It is still reported everywhere; consumers show it as a note
+	// rather than a failure.
+	BeyondFailWindow bool                 `json:"beyond_fail_window,omitempty"`
+	Instances        []RetirementInstance `json:"instances,omitempty"`
 
 	Suppressed     bool   `json:"suppressed,omitempty"`
 	SuppressReason string `json:"suppress_reason,omitempty"`
@@ -95,6 +99,7 @@ func (r *Report) AttachRetirements(findings []retire.Finding, c *retire.Catalogu
 				Matched: in.Matched,
 			})
 		}
+		rt.BeyondFailWindow = rt.Deferred(r.RetirementGateDays)
 		r.Retirements = append(r.Retirements, rt)
 	}
 	if c != nil {
@@ -125,20 +130,38 @@ func moduleOf(address string) string {
 // HasRetirements reports whether any retirement matched this estate.
 func (r *Report) HasRetirements() bool { return len(r.Retirements) > 0 }
 
-func (r *Report) gatingRetirements() (gating, ignored []Retirement) {
+// gatingRetirements splits retirements three ways.
+//
+// -retirements-fail-within narrows what fails a build, not what is reported: a
+// 2029 deadline is still worth knowing about, it is just not a reason to fail a
+// pipeline today. So deferred findings appear in every report, marked, and only
+// gating ones reach HasGatingFindings.
+func (r *Report) gatingRetirements() (gating, deferred, ignored []Retirement) {
 	for _, rt := range r.Retirements {
 		switch {
 		case rt.Suppressed:
 			ignored = append(ignored, rt)
 		case r.RetirementGateDays > 0 && rt.Days > r.RetirementGateDays:
-			// Outside the -retirements-fail-within window: reported, but not a
-			// reason to fail a build today.
-			continue
+			deferred = append(deferred, rt)
 		default:
 			gating = append(gating, rt)
 		}
 	}
 	return
+}
+
+// reported is every retirement worth showing: gating first, then the ones
+// outside the fail window. Suppressed ones have their own section, as with
+// drift and deprecations.
+func (r *Report) reportedRetirements() []Retirement {
+	gating, deferred, _ := r.gatingRetirements()
+	return append(gating, deferred...)
+}
+
+// Deferred reports whether this finding is outside the -retirements-fail-within
+// window, so a reader can tell "you have until 2029" from "this fails the build".
+func (rt Retirement) Deferred(gateDays int) bool {
+	return gateDays > 0 && rt.Days > gateDays
 }
 
 // When phrases a retirement's deadline in relation to the run.
@@ -162,12 +185,17 @@ func days(n int) string {
 
 // writeRetirements prints the un-suppressed retirement section, soonest first.
 func (r *Report) writeRetirements(bw *errWriter, c palette) {
-	rets, _ := r.gatingRetirements()
+	rets := r.reportedRetirements()
 	if len(rets) == 0 {
 		return
 	}
 	bw.printf("\n%sretirement(s): %d%s\n", c.dim, len(rets), c.reset)
 	for _, rt := range rets {
+		if rt.Deferred(r.RetirementGateDays) {
+			bw.printf("  %s· %s — %s (%s), %d instance(s) — beyond the %d-day fail window%s\n",
+				c.dim, rt.Type, rt.Title, rt.RetiresOn, len(rt.Instances), r.RetirementGateDays, c.reset)
+			continue
+		}
 		colour := c.yellow
 		if rt.Urgency == string(retire.Retired) || rt.Urgency == string(retire.Imminent) {
 			colour = c.red

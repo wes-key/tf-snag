@@ -109,7 +109,7 @@ func (r *Report) teamsPayload(opts TeamsOptions) teamsMessage {
 	}
 	// Retirements arrive soonest-first from the matcher, which is the order that
 	// matters here: a card is skimmed, and the deadline is the news.
-	if rets, _ := r.gatingRetirements(); len(rets) > 0 {
+	if rets := r.reportedRetirements(); len(rets) > 0 {
 		body = append(body, teamsGroup("retire", "Retirements", len(rets),
 			teamsRetirementItems(rets, max))...)
 	}
@@ -315,8 +315,7 @@ func (r *Report) teamsFacts(drift []ResourceReport, depr []Deprecation, ignored 
 	// Only when the check ran: a "Retirements: 0" fact on a card from a pipeline
 	// that never asked for them would read as a clean bill of health.
 	if r.Catalogue != nil {
-		rets, _ := r.gatingRetirements()
-		facts = append(facts, acFact{Title: "Retirements", Value: teamsRetirementFact(rets)})
+		facts = append(facts, acFact{Title: "Retirements", Value: teamsRetirementFact(r.reportedRetirements())})
 	}
 	// Only meaningful when the run was given a -baseline to diff against.
 	// Deliberately not "since the last run": under -teams-notify new the last

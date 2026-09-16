@@ -774,6 +774,9 @@
       });
       body.appendChild(ul);
     }
+    if (rt.beyond_fail_window === true) {
+      body.appendChild(el("div", { class: "tfd-muted", text: "Beyond this pipeline's fail window, so it is reported but did not fail the run." }));
+    }
     if (rt.url) {
       body.appendChild(el("div", null, [
         el("a", { href: rt.url, target: "_blank", rel: "noopener noreferrer", text: rt.url })
@@ -806,10 +809,16 @@
   function retireRowFn(linker) {
     return function (rt) {
       var urgency = (rt.urgency || "scheduled").toLowerCase();
+      // Outside -retirements-fail-within: reported, but not what failed the run,
+      // so it reads as a note rather than as an alarm.
+      var deferred = rt.beyond_fail_window === true;
       return {
-        sign: retireSign(urgency),
+        sign: deferred ? { glyph: "·", cls: "tfd-sev" } : retireSign(urgency),
         primary: el("strong", { text: rt.title || rt.id || "Retirement" }),
-        cells: [retireResources(rt), badge(rt.retires_on + " · " + retireWhen(rt), urgency)],
+        cells: [
+          retireResources(rt),
+          badge(rt.retires_on + " · " + retireWhen(rt), deferred ? "scheduled" : urgency)
+        ],
         detail: retireDetail(linker, rt)
       };
     };
