@@ -150,10 +150,12 @@ log at `plan.jsonl`, and that you want the tab.
 
 | Input | Default | |
 |---|---|---|
-| `checks` | `all` | `all`, `drift` or `deprecations` |
+| `checks` | `all` | `all`, `drift`, `deprecations`, `retirements`, `drift,retirements` or `all,retirements`. Retirements are opt-in: they come from a catalogue in the binary rather than from the plan alone |
 | `plan` | `plan.json` | `terraform show -json` output |
 | `planLog` | `plan.jsonl` | `terraform plan -json` NDJSON log — where the deprecation warnings are |
 | `planLogDir` | — | repo-relative directory the plan ran in, e.g. `terraform` for `-chdir=terraform`. Makes the deprecation links resolve |
+| `retirementsFile` | — | a retirement catalogue that **replaces** the one built into tf-snag, for your own deadlines or an air-gapped pin |
+| `retirementsFailWithin` | — | days; only retirements this close fail the step. Everything is still reported — useful when adopting the check on an older estate |
 | `source` | `$(Build.SourcesDirectory)` | links findings to the `.tf` declaring them, and picks up inline `# tf-snag:ignore` comments |
 | `ignoreFile` | — | empty auto-discovers `.tf-snag-ignore.yml` |
 | `workingDirectory` | `$(System.DefaultWorkingDirectory)` | where tf-snag runs; relative paths resolve against it |

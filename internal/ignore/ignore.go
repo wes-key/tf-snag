@@ -41,8 +41,9 @@ type Rule struct {
 
 // Set is the merged collection of ignore rules.
 type Set struct {
-	drift []Rule
-	depr  []Rule
+	drift  []Rule
+	depr   []Rule
+	retire []Rule
 
 	next int
 	// hits records what each rule actually suppressed, by rule id. Populated by
@@ -59,7 +60,9 @@ type Hit struct {
 }
 
 // Empty reports whether the set has no rules.
-func (s *Set) Empty() bool { return s == nil || (len(s.drift) == 0 && len(s.depr) == 0) }
+func (s *Set) Empty() bool {
+	return s == nil || (len(s.drift) == 0 && len(s.depr) == 0 && len(s.retire) == 0)
+}
 
 // Merge folds o's rules into s, renumbering so ids stay unique across the merge
 // - the file set and the source set are built independently and both start at 0.
@@ -78,6 +81,7 @@ func (s *Set) Merge(o *Set) {
 	}
 	s.drift = append(s.drift, shift(o.drift)...)
 	s.depr = append(s.depr, shift(o.depr)...)
+	s.retire = append(s.retire, shift(o.retire)...)
 	s.next = base + o.next
 }
 
@@ -99,6 +103,13 @@ type fileSchema struct {
 		Match  string `yaml:"match"`
 		Reason string `yaml:"reason"`
 	} `yaml:"deprecations"`
+	// A retirement rule names either the catalogue entry (id) or one affected
+	// resource (address) — see retirement.go.
+	Retirements []struct {
+		ID      string `yaml:"id"`
+		Address string `yaml:"address"`
+		Reason  string `yaml:"reason"`
+	} `yaml:"retirements"`
 }
 
 // LoadFile parses a tf-snag ignore YAML. An empty path returns an empty set
@@ -128,6 +139,16 @@ func LoadFile(path string) (*Set, error) {
 			continue
 		}
 		s.depr = append(s.depr, Rule{Match: strings.ToLower(d.Match), Reason: d.Reason, Src: src, id: s.nextID()})
+	}
+	for _, d := range fsc.Retirements {
+		// Match carries the catalogue id and Addr the resource address, so one
+		// rule shape serves both and Exceptions reports them alike.
+		if d.ID == "" && d.Address == "" {
+			continue
+		}
+		s.retire = append(s.retire, Rule{
+			Match: d.ID, Addr: d.Address, Reason: d.Reason, Src: src, id: s.nextID(),
+		})
 	}
 	return s, nil
 }
@@ -272,6 +293,7 @@ func (s *Set) Apply(r *report.Report) {
 			s.record(rule, Hit{Kind: "deprecation", Address: r.Deprecations[i].Summary})
 		}
 	}
+	s.applyRetirements(r)
 }
 
 func (s *Set) record(r Rule, h Hit) {
@@ -317,6 +339,7 @@ func (s *Set) Exceptions() []Exception {
 	}
 	collect(s.drift, "drift")
 	collect(s.depr, "deprecation")
+	collect(s.retire, "retirement")
 
 	sort.Ints(order)
 	out := make([]Exception, 0, len(order))

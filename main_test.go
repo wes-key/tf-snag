@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/wes-key/tf-snag/internal/report"
 )
 
 // The Teams webhook is picked up from the environment, so a developer (or an
@@ -337,8 +339,8 @@ func TestRunDeprecationsJSON(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
 		t.Fatalf("output not JSON: %v\n%s", err, out.String())
 	}
-	if doc.Schema != 2 {
-		t.Errorf("schema = %d, want 2", doc.Schema)
+	if doc.Schema != report.ReportSchema {
+		t.Errorf("schema = %d, want %d", doc.Schema, report.ReportSchema)
 	}
 	if len(doc.Deprecations) == 0 {
 		t.Errorf("deprecations not carried in JSON: %s", out.String())

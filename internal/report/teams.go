@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/wes-key/tf-snag/internal/retire"
 )
 
 // Microsoft Teams notification, as an Adaptive Card wrapped in the envelope a
@@ -104,6 +106,12 @@ func (r *Report) teamsPayload(opts TeamsOptions) teamsMessage {
 		})
 		body = append(body, teamsGroup("depr", "Deprecations", len(depr),
 			teamsDeprItems(depr, max))...)
+	}
+	// Retirements arrive soonest-first from the matcher, which is the order that
+	// matters here: a card is skimmed, and the deadline is the news.
+	if rets := r.reportedRetirements(); len(rets) > 0 {
+		body = append(body, teamsGroup("retire", "Retirements", len(rets),
+			teamsRetirementItems(rets, max))...)
 	}
 
 	// Suppressed findings get their own collapsed groups, as in the run tab:
@@ -303,6 +311,11 @@ func (r *Report) teamsFacts(drift []ResourceReport, depr []Deprecation, ignored 
 	facts := []acFact{
 		{Title: "Drift", Value: teamsCount(len(drift), driftBreakdown(drift))},
 		{Title: "Deprecations", Value: fmt.Sprintf("%d", len(depr))},
+	}
+	// Only when the check ran: a "Retirements: 0" fact on a card from a pipeline
+	// that never asked for them would read as a clean bill of health.
+	if r.Catalogue != nil {
+		facts = append(facts, acFact{Title: "Retirements", Value: teamsRetirementFact(r.reportedRetirements())})
 	}
 	// Only meaningful when the run was given a -baseline to diff against.
 	// Deliberately not "since the last run": under -teams-notify new the last
@@ -735,4 +748,70 @@ type acAction struct {
 
 type acMSTeams struct {
 	Width string `json:"width,omitempty"`
+}
+
+// teamsRetirementItems renders one row per catalogue entry: the deadline is the
+// headline, the affected addresses are the detail, capped like every other list
+// so one sprawling finding cannot fill the card.
+func teamsRetirementItems(rets []Retirement, max int) []acElement {
+	out := make([]acElement, 0, max+1)
+	for i, rt := range rets {
+		if i == max {
+			out = append(out, teamsMoreItem(len(rets)-max, "retirement"))
+			break
+		}
+		glyph, colour := "⚠", "Warning"
+		if rt.Urgency == string(retire.Retired) || rt.Urgency == string(retire.Imminent) {
+			glyph, colour = "✖", "Attention"
+		}
+		out = append(out, teamsFinding(teamsRow{
+			Glyph:        glyph,
+			Colour:       colour,
+			Title:        "**" + teamsText(rt.Title) + "**",
+			Where:        teamsRetirementWhere(rt),
+			Detail:       teamsPlain(teamsText(rt.Remediation)),
+			Badge:        teamsBadge(rt.RetiresOn + " · " + rt.When()),
+			New:          rt.BaselineState == "new",
+			Unsuppressed: rt.Unsuppressed,
+			Age:          teamsAge(rt.FirstSeen, rt.FirstRunURL),
+			Sep:          i > 0,
+		}))
+	}
+	return out
+}
+
+// teamsRetirementWhere lists the affected addresses, capped: a retirement can
+// match dozens of resources and the count is the part that matters in a card.
+func teamsRetirementWhere(rt Retirement) string {
+	const shown = 3
+	seen := make([]string, 0, shown)
+	for _, in := range rt.Instances {
+		if len(seen) == shown {
+			break
+		}
+		seen = append(seen, in.Address)
+	}
+	where := strings.Join(seen, ", ")
+	if extra := len(rt.Instances) - len(seen); extra > 0 {
+		where += fmt.Sprintf(" +%d more", extra)
+	}
+	return teamsText(where)
+}
+
+// teamsRetirementFact summarises the retirement count, calling out the ones
+// already past their date - the only ones that are not a future problem.
+func teamsRetirementFact(rets []Retirement) string {
+	if len(rets) == 0 {
+		return "0"
+	}
+	var past int
+	for _, rt := range rets {
+		if rt.Days < 0 {
+			past++
+		}
+	}
+	if past == 0 {
+		return fmt.Sprintf("%d", len(rets))
+	}
+	return fmt.Sprintf("%d (%d already retired)", len(rets), past)
 }

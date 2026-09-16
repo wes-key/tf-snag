@@ -159,7 +159,7 @@ function notifyTeams(cfg, common, baseline, env) {
 // warning by default: the run did its job, and the finding is the point.
 function verdict(cfg, driftCode) {
   if (driftCode !== 2) return;
-  var message = "Terraform drift or a deprecation detected - see the tf-snag tab";
+  var message = "tf-snag found drift, a deprecation or a retirement - see the tf-snag tab";
   if (cfg.onDrift === "none") {
     vso.log(message);
     return;
@@ -182,13 +182,24 @@ function readInputs() {
   cfg.outDir = vso.input("outputDirectory") || vso.variable("Build.ArtifactStagingDirectory") || cfg.cwd;
   cfg.bin = resolveBinary();
 
-  cfg.checks = vso.pickInput("checks", ["drift", "deprecations", "all"], "all");
-  cfg.drift = cfg.checks === "drift" || cfg.checks === "all";
-  cfg.deprecations = cfg.checks === "deprecations" || cfg.checks === "all";
+  cfg.checks = vso.pickInput("checks",
+    ["drift", "deprecations", "all", "retirements", "all,retirements", "drift,retirements"], "all");
+  // The picklist values are -check lists, so membership decides which inputs a
+  // run needs rather than a three-way switch.
+  var selected = cfg.checks.split(",");
+  cfg.drift = selected.indexOf("drift") >= 0 || selected.indexOf("all") >= 0;
+  cfg.deprecations = selected.indexOf("deprecations") >= 0 || selected.indexOf("all") >= 0;
+  cfg.retirements = selected.indexOf("retirements") >= 0;
+  // Retirements read the same plan file drift does, so the plan is required
+  // whenever either is on.
+  cfg.needsPlan = cfg.drift || cfg.retirements;
 
-  cfg.plan = cfg.drift ? resolve(cfg.cwd, vso.fileInput("plan") || "plan.json") : "";
+  cfg.plan = cfg.needsPlan ? resolve(cfg.cwd, vso.fileInput("plan") || "plan.json") : "";
   cfg.planLog = cfg.deprecations ? resolve(cfg.cwd, vso.fileInput("planLog") || "plan.jsonl") : "";
   cfg.planLogDir = vso.input("planLogDir");
+  cfg.retirementsFailWithin = cfg.retirements ? vso.input("retirementsFailWithin") : "";
+  cfg.retirementsFile = cfg.retirements ? vso.fileInput("retirementsFile") : "";
+  if (cfg.retirementsFile) cfg.retirementsFile = resolve(cfg.cwd, cfg.retirementsFile);
   cfg.source = vso.input("source") || vso.variable("Build.SourcesDirectory");
   cfg.ignoreFile = vso.fileInput("ignoreFile");
   cfg.runURL = vso.input("runUrl") || defaultRunURL();
@@ -290,7 +301,11 @@ function readAzureDevOpsInputs(cfg) {
 
 function commonArgs(cfg) {
   var args = ["-check", cfg.checks];
-  if (cfg.drift) args.push("-plan", cfg.plan);
+  if (cfg.needsPlan) args.push("-plan", cfg.plan);
+  if (cfg.retirementsFile) args.push("-retirements", cfg.retirementsFile);
+  if (cfg.retirements && cfg.retirementsFailWithin) {
+    args.push("-retirements-fail-within", cfg.retirementsFailWithin);
+  }
   if (cfg.deprecations) {
     args.push("-plan-log", cfg.planLog);
     // `terraform plan -json` reports diagnostic paths relative to the directory

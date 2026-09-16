@@ -125,3 +125,15 @@ func TestResourcesEmptyWithoutStateSections(t *testing.T) {
 		t.Fatalf("Resources() = %v, want none for an empty root module", addresses(got))
 	}
 }
+
+// TestResourcesPrefersPlannedValuesForRetirements guards the property the
+// retirements check depends on: a plan that fixes a resource must not report it
+// as still affected. Written here because it is a plan-parsing promise, not a
+// retirement one.
+func TestResourcesPrefersPlannedValuesForRetirements(t *testing.T) {
+	for _, r := range loadFixture(t, "plan-state.json").Resources() {
+		if r.Address == "azurerm_storage_account.data" && r.Values["min_tls_version"] == "TLS1_0" {
+			t.Fatal("prior_state value won over planned_values; a fix in this plan would still be reported")
+		}
+	}
+}

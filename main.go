@@ -18,12 +18,15 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/wes-key/tf-snag/internal/ado"
 	"github.com/wes-key/tf-snag/internal/ignore"
 	"github.com/wes-key/tf-snag/internal/plan"
 	"github.com/wes-key/tf-snag/internal/report"
+	"github.com/wes-key/tf-snag/internal/retire"
 	"github.com/wes-key/tf-snag/internal/teams"
 	"github.com/wes-key/tf-snag/internal/wiki"
 )
@@ -128,7 +131,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	planPath := fs.String("plan", "", "path to `terraform show -json` output (default: stdin)")
 	planLogPath := fs.String("plan-log", "", "path to `terraform plan -json` NDJSON log (required by -check deprecations)")
 	planLogDir := fs.String("plan-log-dir", "", "directory `terraform plan` ran in, relative to the repo root; prepended to deprecation file locations so their links resolve")
-	checks := fs.String("check", "drift", "analyses to run: drift, deprecations, or a comma `list` (also: all)")
+	checks := fs.String("check", "drift", "analyses to run: drift, deprecations, retirements, or a comma `list` (also: all, which excludes retirements)")
+	retirements := fs.String("retirements", "", "retirement catalogue YAML to use instead of the built-in one, e.g. to add your own deadlines")
+	retireWithin := fs.String("retirements-fail-within", "", "only let retirements trip -exit-code when they are this close, e.g. `90d` (default: every un-suppressed retirement gates)")
 	format := fs.String("format", "text", "output format: text, json, markdown, junit, sarif or teams")
 	exitCode := fs.Bool("exit-code", true, "exit 2 when drift or a deprecation is detected")
 	color := fs.String("color", "auto", "colorize text output: auto, always or never")
@@ -171,7 +176,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	driftOn, deprOn, err := parseChecks(*checks)
+	driftOn, deprOn, retireOn, err := parseChecks(*checks)
 	if err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
 		return 2
@@ -218,8 +223,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "tf-snag: -wiki-page needs -ado-url to say which project's wiki to write to")
 		return 2
 	}
-	if *planPath != "" && !driftOn {
-		fmt.Fprintln(stderr, "tf-snag: -plan set but -check does not include drift")
+	if *planPath != "" && !driftOn && !retireOn {
+		fmt.Fprintln(stderr, "tf-snag: -plan set but -check does not include drift or retirements")
+		return 2
+	}
+	if *retirements != "" && !retireOn {
+		fmt.Fprintln(stderr, "tf-snag: -retirements set but -check does not include retirements")
+		return 2
+	}
+	failWithin, err := parseFailWithin(*retireWithin)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	if failWithin > 0 && !retireOn {
+		fmt.Fprintln(stderr, "tf-snag: -retirements-fail-within set but -check does not include retirements")
 		return 2
 	}
 	if driftOn && *planPath == "" && deprOn && *planLogPath == "" {
@@ -241,7 +259,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 
 	var p *plan.Plan
-	if driftOn {
+	if driftOn || retireOn {
 		raw, err := readInput(*planPath, stdin)
 		if err != nil {
 			fmt.Fprintln(stderr, "tf-snag:", err)
@@ -282,8 +300,18 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		p = &plan.Plan{}
 	}
 	rep := report.Build(p)
+	if !driftOn {
+		// -check retirements reads the same plan but was not asked about drift,
+		// and a report must not carry findings nobody asked for.
+		rep.Drift, rep.Pending = nil, nil
+	}
 	if deprOn {
 		rep.Deprecations = report.Deprecations(diags)
+	}
+	if retireOn {
+		if code := checkRetirements(rep, p, *retirements, failWithin, stderr); code != 0 {
+			return code
+		}
 	}
 
 	ignoreSet, code := applyIgnores(rep, *ignorePath, *source, stderr)
@@ -617,6 +645,11 @@ func adoEligibility(raise string, rep *report.Report, stderr io.Writer) (func(ad
 				newIDs[d.FindingID()] = true
 			}
 		}
+		for _, rt := range rep.Retirements {
+			if rt.BaselineState == "new" || rt.Unsuppressed {
+				newIDs[rt.FindingID()] = true
+			}
+		}
 		return func(_ ado.FindingKind, id string) bool { return newIDs[id] }, nil
 	default:
 		return nil, fmt.Errorf("invalid -ado-raise %q (want new or findings)", raise)
@@ -724,9 +757,14 @@ func discoverIgnore(source string) string {
 }
 
 // parseChecks turns the -check value into the set of analyses to run.
-func parseChecks(s string) (drift, depr bool, err error) {
+//
+// `all` deliberately leaves retirements out. Drift and deprecations are derived
+// from the plan and cannot be wrong about someone else's estate; retirements
+// come from a catalogue tf-snag ships, so a pipeline opts into them by name
+// rather than acquiring them in an upgrade.
+func parseChecks(s string) (drift, depr, retirements bool, err error) {
 	if strings.TrimSpace(s) == "" {
-		return false, false, fmt.Errorf("empty -check (want drift, deprecations or all)")
+		return false, false, false, fmt.Errorf("empty -check (want drift, deprecations, retirements or all)")
 	}
 	for _, tok := range strings.Split(s, ",") {
 		switch strings.ToLower(strings.TrimSpace(tok)) {
@@ -734,13 +772,30 @@ func parseChecks(s string) (drift, depr bool, err error) {
 			drift = true
 		case "deprecation", "deprecations":
 			depr = true
+		case "retirement", "retirements":
+			retirements = true
 		case "all", "both":
 			drift, depr = true, true
 		default:
-			return false, false, fmt.Errorf("unknown check %q (want drift, deprecations or all)", strings.TrimSpace(tok))
+			return false, false, false, fmt.Errorf("unknown check %q (want drift, deprecations, retirements or all)", strings.TrimSpace(tok))
 		}
 	}
-	return drift, depr, nil
+	return drift, depr, retirements, nil
+}
+
+// parseFailWithin reads -retirements-fail-within: a day count, with or without
+// a trailing d ("90" or "90d"). Empty means every un-suppressed retirement
+// gates, however far off.
+func parseFailWithin(s string) (int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSuffix(strings.ToLower(s), "d"))
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("invalid -retirements-fail-within %q (want a number of days, e.g. 90d)", s)
+	}
+	return n, nil
 }
 
 // readInput reads path, or stdin when path is empty.
@@ -820,4 +875,27 @@ func indexTFSources(root string) (map[string]report.SourceLoc, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// checkRetirements matches the retirement catalogue against the estate in the
+// plan and attaches the findings to the report.
+//
+// The estate comes from the plan's planned_values / prior_state sections. A
+// plan that carries neither - `terraform show -json` of a plan file from an old
+// Terraform, or a hand-trimmed fixture - yields nothing to check, and saying so
+// matters: a silent empty result reads as "no retirements", which is a claim
+// tf-snag would not have earned.
+func checkRetirements(rep *report.Report, p *plan.Plan, cataloguePath string, failWithin int, stderr io.Writer) int {
+	catalogue, err := retire.Load(cataloguePath)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	resources := p.Resources()
+	if len(resources) == 0 {
+		fmt.Fprintln(stderr, "tf-snag: the plan carries no resource state (planned_values / prior_state), so there is nothing to check for retirements")
+	}
+	rep.RetirementGateDays = failWithin
+	rep.AttachRetirements(retire.Check(catalogue, resources, time.Now()), catalogue, time.Now())
+	return 0
 }

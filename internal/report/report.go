@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/wes-key/tf-snag/internal/plan"
+	"github.com/wes-key/tf-snag/internal/retire"
 )
 
 // ReportSchema is the version of the JSON emitted by WriteJSON. Consumers (the
@@ -24,7 +25,9 @@ import (
 // v2: `deprecations` is now carried (schema 1 dropped it); every drift and
 // deprecation may carry `suppressed`/`suppress_*` (ignore rules) and, when
 // `-baseline` was given, `baseline_state` + `first_seen` (provenance).
-const ReportSchema = 2
+//
+// v3: `retirements` and `retirement_catalogue`, from `-check retirements`.
+const ReportSchema = 3
 
 type Report struct {
 	Schema           int              `json:"schema"`
@@ -33,6 +36,14 @@ type Report struct {
 	Pending          []ResourceReport `json:"pending"`
 	// Deprecations is populated only when `-check` asks for it.
 	Deprecations []Deprecation `json:"deprecations,omitempty"`
+	// Retirements, and the catalogue they came from, are populated only when
+	// `-check retirements` asks for them — see retirement.go.
+	Retirements []Retirement   `json:"retirements,omitempty"`
+	Catalogue   *CatalogueInfo `json:"retirement_catalogue,omitempty"`
+
+	// RetirementGateDays narrows which retirements trip -exit-code
+	// (-retirements-fail-within). 0 gates on every un-suppressed one.
+	RetirementGateDays int `json:"-"`
 }
 
 // Deprecation is one deprecation notice from a `terraform plan -json` log,
@@ -238,6 +249,9 @@ func (r *Report) HasGatingFindings() bool {
 			return true
 		}
 	}
+	if gating, _, _ := r.gatingRetirements(); len(gating) > 0 {
+		return true
+	}
 	return false
 }
 
@@ -257,6 +271,11 @@ func (r *Report) HasNewFindings() bool {
 			return true
 		}
 	}
+	for i := range r.Retirements {
+		if !r.Retirements[i].Suppressed && r.Retirements[i].BaselineState == "new" {
+			return true
+		}
+	}
 	return false
 }
 
@@ -270,6 +289,11 @@ func (r *Report) IsBaselined() bool {
 	}
 	for i := range r.Deprecations {
 		if r.Deprecations[i].BaselineState != "" {
+			return true
+		}
+	}
+	for i := range r.Retirements {
+		if r.Retirements[i].BaselineState != "" {
 			return true
 		}
 	}
@@ -519,6 +543,35 @@ func (r *Report) WriteJUnit(w io.Writer) error {
 			},
 		})
 	}
+	// One case per retirement, not per instance: the work is "stop using this",
+	// however many resources are on it, and the instances go in the body.
+	rets, deferredRets, ignoredRets := r.gatingRetirements()
+	for _, rt := range rets {
+		addrs := make([]string, len(rt.Instances))
+		for i, in := range rt.Instances {
+			addrs[i] = in.Address
+		}
+		body := strings.Join(addrs, "\n")
+		if rt.Remediation != "" {
+			body += "\n\n" + rt.Remediation
+		}
+		suite.Cases = append(suite.Cases, junitCase{
+			Name:      rt.Title,
+			Classname: "tf-snag.retirements",
+			Failure: &junitFailure{
+				Message: fmt.Sprintf("%s retires %s (%s)", rt.Type, rt.RetiresOn, rt.When()),
+				Body:    body,
+			},
+		})
+	}
+	for _, rt := range deferredRets {
+		suite.Cases = append(suite.Cases, junitCase{
+			Name:      rt.Title,
+			Classname: "tf-snag.retirements",
+			Skipped: &junitSkipped{Message: fmt.Sprintf("%s retires %s (%s) — beyond the %d-day fail window",
+				rt.Type, rt.RetiresOn, rt.When(), r.RetirementGateDays)},
+		})
+	}
 	for _, rr := range ignoredDrift {
 		suite.Cases = append(suite.Cases, junitCase{
 			Name:      rr.Address + moduleSuffix(rr.Module),
@@ -526,9 +579,16 @@ func (r *Report) WriteJUnit(w io.Writer) error {
 			Skipped:   &junitSkipped{Message: "ignored — " + reasonOr(rr.SuppressReason) + " [" + rr.SuppressSrc + "]"},
 		})
 	}
+	for _, rt := range ignoredRets {
+		suite.Cases = append(suite.Cases, junitCase{
+			Name:      rt.Title,
+			Classname: "tf-snag.ignored",
+			Skipped:   &junitSkipped{Message: "ignored — " + reasonOr(rt.SuppressReason) + " [" + rt.SuppressSrc + "]"},
+		})
+	}
 	suite.Tests = len(suite.Cases)
-	suite.Failures = len(drift)
-	suite.Skipped = len(ignoredDrift)
+	suite.Failures = len(drift) + len(rets)
+	suite.Skipped = len(ignoredDrift) + len(ignoredRets) + len(deferredRets)
 
 	if _, err := io.WriteString(w, xml.Header); err != nil {
 		return err
@@ -629,6 +689,31 @@ func (r *Report) WriteMarkdown(w io.Writer) error {
 				sites[i] = mdSiteCell(s)
 			}
 			bw.printf("| %s | %s |\n", dep, strings.Join(sites, ", "))
+		}
+	}
+
+	if rets := r.reportedRetirements(); len(rets) > 0 {
+		bw.printf("\n### Retirements\n\n")
+		bw.printf("| Retiring | Date | Resources |\n|---|---|---|\n")
+		for _, rt := range rets {
+			title := "**" + mdCell(rt.Title) + "**"
+			if rt.URL != "" {
+				title = "[" + title + "](" + rt.URL + ")"
+			}
+			addrs := make([]string, len(rt.Instances))
+			for i, in := range rt.Instances {
+				addrs[i] = "`" + mdCell(in.Address) + "`"
+			}
+			when := rt.When()
+			if rt.Deferred(r.RetirementGateDays) {
+				when += ", beyond the fail window"
+			}
+			bw.printf("| %s | %s _(%s)_ | %s |\n",
+				title, rt.RetiresOn, mdCell(when), strings.Join(addrs, ", "))
+		}
+		if r.Catalogue != nil && r.Catalogue.Stale {
+			bw.printf("\n_Retirement catalogue (%s) last updated %s, %d days ago: it may be missing newer notices._\n",
+				mdText(r.Catalogue.Source), r.Catalogue.Updated, r.Catalogue.AgeDays)
 		}
 	}
 
@@ -854,6 +939,14 @@ var sarifRules = []sarifRule{
 		ru.DefaultConfig.Level = "warning"
 		return ru
 	}(),
+	func() sarifRule {
+		ru := sarifRule{
+			ID:               "retirement",
+			ShortDescription: sarifText{Text: "Resource uses a service or SKU the provider is retiring"},
+		}
+		ru.DefaultConfig.Level = "warning"
+		return ru
+	}(),
 }
 
 // WriteSARIF renders the report as a SARIF 2.1.0 log: one `resource-drift`
@@ -945,6 +1038,44 @@ func (r *Report) WriteSARIF(w io.Writer, src map[string]SourceLoc, prior *PriorR
 		run.Results = append(run.Results, res)
 	}
 
+	// One result per catalogue entry, with the affected resources as logical
+	// locations: the same grouping the rest of the report uses, and it keeps a
+	// finding's guid stable as instances come and go.
+	for _, rt := range r.Retirements {
+		res := sarifResult{
+			RuleID:              "retirement",
+			GUID:                resultGUID("retirement", rt.ID),
+			Level:               retirementLevel(rt),
+			Message:             sarifText{Text: retirementMessage(rt)},
+			PartialFingerprints: map[string]string{"retirement/v1": rt.ID},
+			Properties:          retirementProps(rt),
+		}
+		if rt.Suppressed {
+			res.Suppressions = suppressionsFor(rt.SuppressKind, rt.SuppressReason)
+		}
+		for _, in := range rt.Instances {
+			res.LogicalLocations = append(res.LogicalLocations, sarifLogicalLoc{
+				FullyQualifiedName: in.Address,
+				Name:               resourceName(in.Address),
+				Kind:               "resource",
+			})
+			loc := sarifLocation{}
+			if in.File != "" {
+				loc.PhysicalLocation.ArtifactLocation.URI = in.File
+				loc.PhysicalLocation.Region = &sarifRegion{StartLine: in.Line}
+			} else {
+				loc.PhysicalLocation.ArtifactLocation.URI = in.Address
+			}
+			if len(res.Locations) == 0 {
+				res.Locations = []sarifLocation{loc}
+			} else {
+				res.RelatedLocations = append(res.RelatedLocations, loc)
+			}
+		}
+		prior.stamp(&res)
+		run.Results = append(run.Results, res)
+	}
+
 	run.Results = append(run.Results, prior.absent()...)
 
 	enc := json.NewEncoder(w)
@@ -999,6 +1130,13 @@ func (rr ResourceReport) FindingID() string {
 // the sites tripping one notice share a single identity.
 func (d Deprecation) FindingID() string {
 	return resultGUID("deprecation", d.key())
+}
+
+// FindingID for a retirement is keyed on the catalogue id alone, so the item
+// tracking "stop using Basic public IPs" survives instances being migrated one
+// at a time — the work is done when the last one goes, not when the first does.
+func (rt Retirement) FindingID() string {
+	return resultGUID("retirement", rt.ID)
 }
 
 // resultGUID derives a deterministic RFC 4122 v5 UUID from the finding's kind
@@ -1372,6 +1510,47 @@ func deprecationMessage(d Deprecation) string {
 	return b
 }
 
+// retirementLevel escalates as the date nears: a deadline that has passed, or
+// is inside 90 days, is an error in the Scans tab; anything further out is a
+// warning, so a 2028 date does not sit at the top of the list forever.
+func retirementLevel(rt Retirement) string {
+	switch rt.Urgency {
+	case string(retire.Retired), string(retire.Imminent):
+		return "error"
+	default:
+		return "warning"
+	}
+}
+
+func retirementMessage(rt Retirement) string {
+	b := fmt.Sprintf("%s — retires %s (%s)", rt.Title, rt.RetiresOn, rt.When())
+	for _, in := range rt.Instances {
+		b += "\n" + in.Address
+	}
+	if rt.Remediation != "" {
+		b += "\n" + clip(rt.Remediation, 400)
+	}
+	return b
+}
+
+func retirementProps(rt Retirement) map[string]string {
+	p := map[string]string{
+		"retiresOn": rt.RetiresOn,
+		"urgency":   rt.Urgency,
+		"count":     strconv.Itoa(len(rt.Instances)),
+	}
+	if rt.Type != "" {
+		p["resourceType"] = rt.Type
+	}
+	if rt.Severity != "" {
+		p["severity"] = rt.Severity
+	}
+	if rt.URL != "" {
+		p["url"] = rt.URL
+	}
+	return p
+}
+
 func deprecationProps(d Deprecation) map[string]string {
 	p := map[string]string{"severity": d.Severity}
 	switch {
@@ -1461,6 +1640,7 @@ func (r *Report) writeText(w io.Writer, c palette) error {
 		}
 		bw.printf("\n")
 		r.writeDeprecations(bw, c)
+		r.writeRetirements(bw, c)
 		r.writeIgnored(bw, c, ignoredDrift)
 		return bw.err
 	}
@@ -1496,6 +1676,7 @@ func (r *Report) writeText(w io.Writer, c palette) error {
 	}
 
 	r.writeDeprecations(bw, c)
+	r.writeRetirements(bw, c)
 	r.writeIgnored(bw, c, ignoredDrift)
 	return bw.err
 }

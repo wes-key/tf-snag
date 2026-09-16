@@ -46,6 +46,9 @@ pending changes from configuration: 1 to add, 0 to change, 1 to destroy
 
 - **Drift and deprecations** from the plan you already have. No extra Terraform
   run, no extra cloud access. [More](https://github.com/wes-key/tf-snag/wiki/Drift-and-Deprecations)
+- **Azure retirements**: which resources are on a published retirement notice,
+  and how long is left. The catalogue ships in the binary, so there are still no
+  outbound calls. [More](https://github.com/wes-key/tf-snag/wiki/Retirements)
 - **Reports for every surface**: text, JSON, markdown, SARIF, JUnit and Teams
   cards. [More](https://github.com/wes-key/tf-snag/wiki/Output-Formats)
 - **Tracking across runs**: which findings are new, how long the rest have been
