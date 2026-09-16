@@ -18,6 +18,9 @@ type Plan struct {
 	TerraformVersion string           `json:"terraform_version"`
 	ResourceChanges  []ResourceChange `json:"resource_changes"`
 	ResourceDrift    []ResourceChange `json:"resource_drift"`
+	// The whole estate, not just what changed - see state.go.
+	PlannedValues *StateValues `json:"planned_values"`
+	PriorState    *State       `json:"prior_state"`
 }
 
 // ResourceChange describes a single resource's before/after state.
