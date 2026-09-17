@@ -38,6 +38,13 @@ type Options struct {
 	// RunURL is the pipeline run, linked from the footer so a reader can reach
 	// the full tf-snag tab.
 	RunURL string
+	// OnlyNew lists just the findings this pull request adds - new since the
+	// baseline, or just out from under an ignore rule - and counts the rest.
+	//
+	// Under -pr-comment new the whole point is what the change brings. The
+	// estate's standing backlog belongs to the scheduled check, and repeating it
+	// on every pull request is how a comment turns into wallpaper.
+	OnlyNew bool
 }
 
 // Render builds the comment body: a verdict, the counts, then each kind of
@@ -49,11 +56,41 @@ func Render(rep *report.Report, opts Options) string {
 	deprecations := unsuppressedDeprecations(rep)
 	retirements := unsuppressedRetirements(rep)
 
+	var carriedOver int
+	if opts.OnlyNew {
+		keptDrift := drift[:0:0]
+		for _, d := range drift {
+			if isNew(d.BaselineState, d.Unsuppressed) {
+				keptDrift = append(keptDrift, d)
+			}
+		}
+		keptDeprecations := deprecations[:0:0]
+		for _, d := range deprecations {
+			if isNew(d.BaselineState, d.Unsuppressed) {
+				keptDeprecations = append(keptDeprecations, d)
+			}
+		}
+		keptRetirements := retirements[:0:0]
+		for _, r := range retirements {
+			if isNew(r.BaselineState, r.Unsuppressed) {
+				keptRetirements = append(keptRetirements, r)
+			}
+		}
+		carriedOver = (len(drift) - len(keptDrift)) +
+			(len(deprecations) - len(keptDeprecations)) +
+			(len(retirements) - len(keptRetirements))
+		drift, deprecations, retirements = keptDrift, keptDeprecations, keptRetirements
+	}
+
 	var b strings.Builder
 	b.WriteString(Marker)
-	fmt.Fprintf(&b, "\n## %s\n", verdict(drift, deprecations, retirements))
+	fmt.Fprintf(&b, "\n## %s\n", verdict(drift, deprecations, retirements, opts.OnlyNew))
 	if opts.Context != "" {
 		fmt.Fprintf(&b, "\n%s\n", opts.Context)
+	}
+	if carriedOver > 0 {
+		fmt.Fprintf(&b, "\n%s already on the target branch, not listed here.\n",
+			plural(carriedOver, "finding", "findings"))
 	}
 	if n := countIgnored(rep); n > 0 {
 		fmt.Fprintf(&b, "\n%s suppressed by an ignore rule, not listed below.\n",
@@ -74,7 +111,7 @@ func Render(rep *report.Report, opts Options) string {
 }
 
 // verdict leads with what the reviewer has to decide about.
-func verdict(drift []report.ResourceReport, deprecations []report.Deprecation, retirements []report.Retirement) string {
+func verdict(drift []report.ResourceReport, deprecations []report.Deprecation, retirements []report.Retirement, onlyNew bool) string {
 	var parts []string
 	if n := len(drift); n > 0 {
 		parts = append(parts, plural(n, "resource changed outside Terraform", "resources changed outside Terraform"))
@@ -86,9 +123,22 @@ func verdict(drift []report.ResourceReport, deprecations []report.Deprecation, r
 		parts = append(parts, plural(n, "retirement", "retirements"))
 	}
 	if len(parts) == 0 {
+		if onlyNew {
+			return "tf-snag: nothing new in this pull request"
+		}
 		return "tf-snag: nothing to flag"
 	}
-	return "tf-snag: " + strings.Join(parts, ", ")
+	headline := "tf-snag: " + strings.Join(parts, ", ")
+	if onlyNew {
+		headline += ", new in this pull request"
+	}
+	return headline
+}
+
+// isNew is the test every "new" gate uses: absent from the baseline, or just out
+// from under an ignore rule.
+func isNew(state string, unsuppressed bool) bool {
+	return state == "new" || unsuppressed
 }
 
 func writeDrift(b *strings.Builder, items []report.ResourceReport) {

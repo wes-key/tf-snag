@@ -181,3 +181,70 @@ func TestShortClipsOnRunes(t *testing.T) {
 		t.Errorf("short() clipped to %d runes, want 60 plus an ellipsis", len([]rune(got)))
 	}
 }
+
+// Under `new` the comment is about the change, not the estate. Listing findings
+// the target branch already carries is how a comment becomes wallpaper.
+func TestRenderOnlyNewListsWhatThePullRequestAdds(t *testing.T) {
+	rep := &report.Report{
+		Drift: []report.ResourceReport{
+			{Address: "azurerm_lb.carried_over", Action: "Updated", BaselineState: "updated"},
+			{Address: "azurerm_lb.brand_new", Action: "Updated", BaselineState: "new"},
+			{Address: "azurerm_lb.unignored", Action: "Updated", BaselineState: "updated", Unsuppressed: true},
+		},
+		Retirements: []report.Retirement{
+			{Title: "Old news", RetiresOn: "2025-09-30", Days: -352, BaselineState: "updated"},
+			{Title: "Just appeared", RetiresOn: "2026-06-30", Days: -79, BaselineState: "new"},
+		},
+	}
+
+	got := Render(rep, Options{OnlyNew: true})
+
+	for _, want := range []string{
+		"azurerm_lb.brand_new",
+		"azurerm_lb.unignored", // no longer ignored counts as new
+		"Just appeared",
+		"2 findings already on the target branch, not listed here.",
+		"new in this pull request",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("comment is missing %q:\n%s", want, got)
+		}
+	}
+	for _, unwanted := range []string{"azurerm_lb.carried_over", "Old news"} {
+		if strings.Contains(got, unwanted) {
+			t.Errorf("comment lists %q, which the target branch already has:\n%s", unwanted, got)
+		}
+	}
+}
+
+func TestRenderOnlyNewWithNothingNew(t *testing.T) {
+	rep := &report.Report{Drift: []report.ResourceReport{
+		{Address: "azurerm_lb.carried_over", Action: "Updated", BaselineState: "updated"},
+	}}
+
+	got := Render(rep, Options{OnlyNew: true})
+
+	if !strings.Contains(got, "nothing new in this pull request") {
+		t.Errorf("headline should say nothing is new:\n%s", got)
+	}
+	if !strings.Contains(got, "1 finding already on the target branch") {
+		t.Errorf("the carried-over finding should still be counted:\n%s", got)
+	}
+}
+
+// Without OnlyNew the comment is the whole picture, and must not claim otherwise.
+func TestRenderWithoutOnlyNewListsEverything(t *testing.T) {
+	rep := &report.Report{Drift: []report.ResourceReport{
+		{Address: "azurerm_lb.carried_over", Action: "Updated", BaselineState: "updated"},
+		{Address: "azurerm_lb.brand_new", Action: "Updated", BaselineState: "new"},
+	}}
+
+	got := Render(rep, Options{})
+
+	if !strings.Contains(got, "azurerm_lb.carried_over") || !strings.Contains(got, "azurerm_lb.brand_new") {
+		t.Errorf("both findings should be listed:\n%s", got)
+	}
+	if strings.Contains(got, "new in this pull request") || strings.Contains(got, "already on the target branch") {
+		t.Errorf("comment should not claim to be filtered:\n%s", got)
+	}
+}

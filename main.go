@@ -591,7 +591,15 @@ func commentOnPR(rep *report.Report, cfg prConfig, stderr io.Writer) int {
 
 	// Render before deciding: a dry run is for reading the comment, and having
 	// to be able to reach Azure DevOps first makes it useless where it is wanted.
-	body := prcomment.Render(rep, prcomment.Options{Context: cfg.context, RunURL: cfg.runURL})
+	// Only list what the pull request adds when the run can actually tell: with
+	// no baseline, "new" has already fallen back to "findings", and a comment
+	// headed "new in this pull request" would be a claim the run cannot support.
+	opts := prcomment.Options{
+		Context: cfg.context,
+		RunURL:  cfg.runURL,
+		OnlyNew: cfg.mode == "new" && rep.IsBaselined(),
+	}
+	body := prcomment.Render(rep, opts)
 	if cfg.dryRun {
 		fmt.Fprintln(stderr, "----- pull request comment (dry run) -----")
 		fmt.Fprint(stderr, body)
