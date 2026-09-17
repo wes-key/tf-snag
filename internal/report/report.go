@@ -1271,8 +1271,8 @@ func (pr *PriorResults) stamp(res *sarifResult) {
 	res.Message.Text = withAge(res.Message.Text, seen)
 }
 
-// StampReport sets BaselineState + FirstSeen on every drift and deprecation in
-// r by matching each against the previous run — the same guid derivation
+// StampReport sets BaselineState + FirstSeen on every drift, deprecation and
+// retirement in r by matching each against the previous run — the same guid derivation
 // WriteSARIF uses. Unmatched -> "new" + FirstSeen now; carried over -> "updated"
 // + the prior run's FirstSeen (or now, if the prior run predates provenance).
 // A nil receiver is a no-op: findings stay unstamped and the extension renders
@@ -1295,6 +1295,17 @@ func (pr *PriorResults) StampReport(r *Report) {
 		r.Deprecations[i].FirstSeen = firstOr(m.firstSeen, now)
 		r.Deprecations[i].FirstRunURL = firstOr(m.firstRunURL, pr.RunURL)
 		r.Deprecations[i].Unsuppressed = m.wasSuppressed && !r.Deprecations[i].Suppressed
+	}
+	// Retirements are stamped on the same guid SARIF writes them under, keyed on
+	// the catalogue id. Leaving them out here left every consumer of "new" blind
+	// to them: the fields existed and were never set, so a retirement that had
+	// just appeared looked exactly like one carried over for months.
+	for i := range r.Retirements {
+		m := pr.matchGUID(resultGUID("retirement", r.Retirements[i].ID))
+		r.Retirements[i].BaselineState = m.state
+		r.Retirements[i].FirstSeen = firstOr(m.firstSeen, now)
+		r.Retirements[i].FirstRunURL = firstOr(m.firstRunURL, pr.RunURL)
+		r.Retirements[i].Unsuppressed = m.wasSuppressed && !r.Retirements[i].Suppressed
 	}
 }
 
