@@ -203,7 +203,7 @@ func TestRenderOnlyNewListsWhatThePullRequestAdds(t *testing.T) {
 		"azurerm_lb.brand_new",
 		"azurerm_lb.unignored", // no longer ignored counts as new
 		"Just appeared",
-		"2 findings already on the target branch, not listed here.",
+		"Not listed: 2 findings already on the target branch.",
 		"new in this pull request",
 	} {
 		if !strings.Contains(got, want) {
@@ -227,7 +227,7 @@ func TestRenderOnlyNewWithNothingNew(t *testing.T) {
 	if !strings.Contains(got, "nothing new in this pull request") {
 		t.Errorf("headline should say nothing is new:\n%s", got)
 	}
-	if !strings.Contains(got, "1 finding already on the target branch") {
+	if !strings.Contains(got, "Not listed: 1 finding already on the target branch") {
 		t.Errorf("the carried-over finding should still be counted:\n%s", got)
 	}
 }

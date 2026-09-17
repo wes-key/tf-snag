@@ -96,13 +96,17 @@ func Render(rep *report.Report, opts Options) string {
 	if opts.Context != "" {
 		fmt.Fprintf(&b, "\n%s\n", opts.Context)
 	}
+	// One muted line rather than a paragraph each: these are the findings the
+	// comment is not about, and they should not be the first thing read.
+	var aside []string
 	if carriedOver > 0 {
-		fmt.Fprintf(&b, "\n%s already on the target branch, not listed here.\n",
-			plural(carriedOver, "finding", "findings"))
+		aside = append(aside, plural(carriedOver, "finding", "findings")+" already on the target branch")
 	}
 	if n := countIgnored(rep); n > 0 {
-		fmt.Fprintf(&b, "\n%s suppressed by an ignore rule, not listed below.\n",
-			plural(n, "finding", "findings"))
+		aside = append(aside, plural(n, "finding", "findings")+" suppressed by an ignore rule")
+	}
+	if len(aside) > 0 {
+		fmt.Fprintf(&b, "\n*Not listed: %s.*\n", strings.Join(aside, " · "))
 	}
 
 	writeDrift(&b, drift)
@@ -153,7 +157,7 @@ func writeDrift(b *strings.Builder, items []report.ResourceReport) {
 	if len(items) == 0 {
 		return
 	}
-	fmt.Fprintf(b, "\n### Changed outside Terraform (%d)\n\n", len(items))
+	fmt.Fprintf(b, "\n**Changed outside Terraform (%d)**\n\n", len(items))
 	for i, d := range items {
 		if i == maxPerSection {
 			fmt.Fprintf(b, "\n…and %d more.\n", len(items)-maxPerSection)
@@ -182,7 +186,7 @@ func writeDeprecations(b *strings.Builder, items []report.Deprecation) {
 	if len(items) == 0 {
 		return
 	}
-	fmt.Fprintf(b, "\n### Deprecations (%d)\n\n", len(items))
+	fmt.Fprintf(b, "\n**Deprecations (%d)**\n\n", len(items))
 	for i, d := range items {
 		if i == maxPerSection {
 			fmt.Fprintf(b, "\n…and %d more.\n", len(items)-maxPerSection)
@@ -213,7 +217,7 @@ func writeRetirements(b *strings.Builder, items []report.Retirement) {
 	sorted := append([]report.Retirement(nil), items...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Days < sorted[j].Days })
 
-	fmt.Fprintf(b, "\n### Retirements (%d)\n\n", len(sorted))
+	fmt.Fprintf(b, "\n**Retirements (%d)**\n\n", len(sorted))
 	for i, r := range sorted {
 		if i == maxPerSection {
 			fmt.Fprintf(b, "\n…and %d more.\n", len(sorted)-maxPerSection)
@@ -223,7 +227,10 @@ func writeRetirements(b *strings.Builder, items []report.Retirement) {
 		if r.URL != "" {
 			title = fmt.Sprintf("[%s](%s)", r.Title, r.URL)
 		}
-		fmt.Fprintf(b, "- **%s** — %s%s\n", title, deadline(r), badges(r.BaselineState, r.Unsuppressed, ""))
+		// The mark is what a reviewer scans on: past its date reads differently
+		// from years away, and the words for both are the same length.
+		fmt.Fprintf(b, "- %s **%s** — %s%s\n", urgencyMark(r), title, deadline(r),
+			badges(r.BaselineState, r.Unsuppressed, ""))
 		for j, in := range r.Instances {
 			if j == maxDetail {
 				fmt.Fprintf(b, "  - …and %s\n", plural(len(r.Instances)-maxDetail, "more resource", "more resources"))
@@ -232,6 +239,17 @@ func writeRetirements(b *strings.Builder, items []report.Retirement) {
 			fmt.Fprintf(b, "  - `%s`\n", in.Address)
 		}
 	}
+}
+
+// urgencyMark is the glyph in front of a retirement. The same two the SARIF
+// severity column uses, so a reader who has seen the Scans tab already knows
+// which is which: ⛔ for a deadline that has passed or is inside the gate, ⚠ for
+// one still far enough out to plan around.
+func urgencyMark(r report.Retirement) string {
+	if r.BeyondFailWindow {
+		return "⚠"
+	}
+	return "⛔"
 }
 
 // deadline says how long is left in words a reader can act on, and marks the
