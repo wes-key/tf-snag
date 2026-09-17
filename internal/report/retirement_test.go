@@ -265,3 +265,26 @@ func TestFailWindowNarrowsTheGateButNotTheReport(t *testing.T) {
 		t.Errorf("junit marks a deferred retirement as a failure:\n%s", junit.String())
 	}
 }
+
+// A retirement that has just appeared is newly actionable. Leaving retirements
+// out of this is what made -teams-notify new and -pr-comment new silent about a
+// resource that had just landed on a published retirement notice.
+func TestHasNewlyActionableIncludesRetirements(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rt   Retirement
+		want bool
+	}{
+		{"new", Retirement{ID: "a", BaselineState: "new"}, true},
+		{"no longer ignored", Retirement{ID: "a", Unsuppressed: true}, true},
+		{"carried over", Retirement{ID: "a", BaselineState: "updated"}, false},
+		{"still ignored", Retirement{ID: "a", BaselineState: "new", Suppressed: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := &Report{Retirements: []Retirement{tc.rt}}
+			if got := rep.HasNewlyActionable(); got != tc.want {
+				t.Errorf("HasNewlyActionable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

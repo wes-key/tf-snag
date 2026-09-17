@@ -1336,6 +1336,15 @@ func (r *Report) HasNewlyActionable() bool {
 			return true
 		}
 	}
+	// Retirements count too. They were added after this function, and leaving
+	// them out made -teams-notify new and -pr-comment new silent about a
+	// resource that had just landed on a published retirement notice — the one
+	// finding nobody can fix by waiting.
+	for i := range r.Retirements {
+		if !r.Retirements[i].Suppressed && (r.Retirements[i].BaselineState == "new" || r.Retirements[i].Unsuppressed) {
+			return true
+		}
+	}
 	return false
 }
 
