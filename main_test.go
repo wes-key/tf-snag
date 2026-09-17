@@ -884,3 +884,145 @@ func TestRunWithoutADOURLIsUnchanged(t *testing.T) {
 		t.Errorf("work item fields leaked into a run with no -ado-url:\n%s", out.String())
 	}
 }
+
+// --- pull request comments ----------------------------------------------------
+
+// prStub fakes the threads API and records the bodies it was sent.
+func prStub(t *testing.T, posted *[]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			raw, _ := io.ReadAll(r.Body)
+			*posted = append(*posted, string(raw))
+			w.Write([]byte(`{"id":1,"status":"active"}`))
+			return
+		}
+		w.Write([]byte(`{"value":[]}`))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRunPRCommentPostsTheFindings(t *testing.T) {
+	var posted []string
+	srv := prStub(t, &posted)
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-url", srv.URL + "/proj", "-ado-token", "pat", "-ado-work-items=false",
+		"-pr-comment", "findings", "-pr-id", "7", "-pr-repo", "repo-1"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if len(posted) != 1 {
+		t.Fatalf("posted %d comments, want 1", len(posted))
+	}
+	if !strings.Contains(posted[0], "tf-snag:pr-comment") {
+		t.Errorf("comment carries no marker, so the next run cannot find it: %s", posted[0])
+	}
+	// The report itself must stay clean: stdout is redirected to a file.
+	if strings.Contains(out.String(), "tf-snag:pr-comment") {
+		t.Errorf("comment leaked into stdout:\n%s", out.String())
+	}
+}
+
+// The same pipeline definition runs on a schedule and on a pull request. Outside
+// a PR build there is nothing to comment on, and that is not a failure.
+func TestRunPRCommentOutsideAPullRequestIsNotAnError(t *testing.T) {
+	t.Setenv("SYSTEM_PULLREQUEST_PULLREQUESTID", "")
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-url", "https://dev.azure.com/o/p", "-ado-token", "pat", "-ado-work-items=false",
+		"-pr-comment", "findings"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "not a pull request build") {
+		t.Errorf("stderr should say why nothing was posted: %q", errb.String())
+	}
+}
+
+func TestRunPRCommentTakesTheIDFromTheAgentEnvironment(t *testing.T) {
+	var posted []string
+	srv := prStub(t, &posted)
+	t.Setenv("SYSTEM_PULLREQUEST_PULLREQUESTID", "12")
+	t.Setenv("BUILD_REPOSITORY_ID", "repo-from-env")
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-url", srv.URL + "/proj", "-ado-token", "pat", "-ado-work-items=false",
+		"-pr-comment", "findings"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if len(posted) != 1 {
+		t.Fatalf("posted %d comments, want 1 — stderr: %s", len(posted), errb.String())
+	}
+}
+
+func TestRunPRCommentDryRunPostsNothing(t *testing.T) {
+	var posted []string
+	srv := prStub(t, &posted)
+
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-ado-url", srv.URL + "/proj", "-ado-token", "pat", "-ado-work-items=false",
+		"-pr-comment", "findings", "-pr-id", "7", "-pr-repo", "repo-1", "-pr-comment-dry-run"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 — stderr: %s", code, errb.String())
+	}
+	if len(posted) != 0 {
+		t.Errorf("dry run posted %d comments for real", len(posted))
+	}
+	if !strings.Contains(errb.String(), "dry run") {
+		t.Errorf("dry run should print the comment it would post:\n%s", errb.String())
+	}
+}
+
+func TestRunPRCommentRejectsBadMode(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-pr-comment", "sometimes"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "off, findings or new") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+func TestRunPRCommentNeedsADOURL(t *testing.T) {
+	var out, errb bytes.Buffer
+	code := run([]string{"-exit-code=false", "-pr-comment", "findings"},
+		strings.NewReader(driftPlanJSON), &out, &errb)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(errb.String(), "-ado-url") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+}
+
+func TestParsePRComment(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		wantErr  bool
+	}{
+		{in: "", want: "off"},
+		{in: "off", want: "off"},
+		{in: "FINDINGS", want: "findings"},
+		{in: " new ", want: "new"},
+		{in: "always", wantErr: true},
+	} {
+		got, err := parsePRComment(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("parsePRComment(%q) accepted it", tc.in)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Errorf("parsePRComment(%q) = %q, %v; want %q", tc.in, got, err, tc.want)
+		}
+	}
+}

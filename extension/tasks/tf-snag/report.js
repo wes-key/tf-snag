@@ -256,9 +256,11 @@ function readAzureDevOpsInputs(cfg) {
 
   var mode = vso.pickInput("workItems", ["off", "dry-run", "on"], "off");
   var wikiPage = vso.input("wikiPage");
+  var prComment = vso.pickInput("prComment", ["off", "findings", "new"], "off");
   var wants = [];
   if (mode !== "off") wants.push("workItems is " + mode);
   if (wikiPage) wants.push("wikiPage is set");
+  if (prComment !== "off") wants.push("prComment is " + prComment);
   if (!wants.length) return;
 
   var url = vso.input("adoUrl") || defaultProjectURL();
@@ -296,6 +298,18 @@ function readAzureDevOpsInputs(cfg) {
     var wikiName = vso.input("wiki");
     if (wikiName) cfg.adoArgs.push("-wiki", wikiName);
     if (vso.boolInput("wikiDryRun", false)) cfg.adoArgs.push("-wiki-dry-run");
+  }
+
+  if (prComment !== "off") {
+    cfg.adoArgs.push("-pr-comment", prComment);
+    // The pull request and repository come from the agent. tf-snag reads the
+    // same variables itself, but passing them keeps the command in the log
+    // complete - and lets a job that knows better override them.
+    var pr = vso.variable("System.PullRequest.PullRequestId");
+    if (pr) cfg.adoArgs.push("-pr-id", pr);
+    var repo = vso.variable("Build.Repository.ID");
+    if (repo) cfg.adoArgs.push("-pr-repo", repo);
+    if (vso.boolInput("prCommentDryRun", false)) cfg.adoArgs.push("-pr-comment-dry-run");
   }
 }
 

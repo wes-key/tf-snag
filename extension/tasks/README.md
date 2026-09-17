@@ -236,6 +236,27 @@ repository to every pipeline in the project and leaves no trace. The page is onl
 not bury the wiki revisions that mean something. One page per pipeline: two
 pointed at the same path will overwrite each other.
 
+**Pull request comment** — `prComment` posts the findings onto the pull request
+being built, so a reviewer reads them in the conversation rather than having to
+open the **tf-snag** tab. `findings` comments whenever anything un-suppressed was
+found; `new` only when the pull request adds a finding the `baseline` does not
+have, or one that has just come out from under an ignore rule.
+
+One thread per pull request: later runs edit that comment rather than adding
+another, and once the findings have gone the thread is updated to say so and
+closed. A pull request whose comment somebody deleted gets a fresh one — deleting
+it is a decision, and arguing with it by editing the comment back is not the
+tool's place.
+
+Outside a pull request build nothing is posted and the run is not failed, so this
+can stay on in a pipeline that also runs on a schedule. `prCommentDryRun` prints
+the comment to the log without posting it.
+
+It shares `adoUrl` and `adoToken` with work items and the register, and needs
+**Contribute to pull requests** on the repository — a separate grant from the
+work item and wiki scopes. The pull request and repository ids come from the
+agent (`System.PullRequest.PullRequestId`, `Build.Repository.ID`).
+
 **Teams** — `teamsWebhook` (or `TF_SNAG_TEAMS_WEBHOOK` in the step's `env`),
 `teamsNotify` (`new` / `findings` / `always`), `teamsContext`,
 `failOnTeamsError`. No webhook, no post. Pass it from a **secret** variable: it

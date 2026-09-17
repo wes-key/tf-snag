@@ -17,6 +17,7 @@
     { "name": "publish", "displayName": "What to publish", "isExpanded": false },
     { "name": "workItems", "displayName": "Work items", "isExpanded": false },
     { "name": "wiki", "displayName": "Exceptions register (wiki)", "isExpanded": false },
+    { "name": "pullRequest", "displayName": "Pull request comment", "isExpanded": false },
     { "name": "teams", "displayName": "Microsoft Teams", "isExpanded": false },
     { "name": "advanced", "displayName": "Advanced", "isExpanded": false }
   ],
@@ -285,6 +286,31 @@
       "required": false,
       "groupName": "wiki",
       "helpMarkDown": "Print the page to the log and report what would change, without writing. Still reads the wiki, so it exercises the token and its wiki access — a PAT needs the **Wiki (Read & Write)** scope, and the `System.AccessToken` identity needs **Contribute** on the `<project>.wiki` repository, under Project settings > Repos > Repositories. Separate from work items either way."
+    },
+
+    {
+      "name": "prComment",
+      "type": "pickList",
+      "label": "Comment on the pull request",
+      "defaultValue": "off",
+      "required": false,
+      "groupName": "pullRequest",
+      "options": {
+        "off": "Do not comment",
+        "findings": "Anything not ignored",
+        "new": "Only what this pull request adds"
+      },
+      "helpMarkDown": "Posts the findings as a comment on the pull request being built, so a reviewer reads them in the conversation rather than having to open the **tf-snag** tab. One thread per pull request, updated in place on every run and closed once the findings have gone.\n\n`new` needs **Provenance > baseline** to tell a finding this pull request adds from one the target branch already has; without one it comments as `findings` would, and says so.\n\nOutside a pull request build nothing is posted, so this can stay on in a pipeline that also runs on a schedule. Needs `adoUrl`, a token, and **Contribute to pull requests** on the repository for the identity behind `adoToken` — for `System.AccessToken` that is the *&lt;Project&gt; Build Service*."
+    },
+    {
+      "name": "prCommentDryRun",
+      "type": "boolean",
+      "label": "Dry run",
+      "defaultValue": false,
+      "required": false,
+      "groupName": "pullRequest",
+      "visibleRule": "prComment != off",
+      "helpMarkDown": "Print the comment to the log and report what would be posted, without posting. Still reads the pull request's existing comments, so it exercises the token and its **Contribute to pull requests** permission."
     },
 
     {
