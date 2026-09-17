@@ -248,3 +248,57 @@ func TestRenderWithoutOnlyNewListsEverything(t *testing.T) {
 		t.Errorf("comment should not claim to be filtered:\n%s", got)
 	}
 }
+
+// Two values that differ only past the clip would print as an identical pair,
+// which reads as a finding about nothing.
+func TestRenderDoesNotPrintAnIdenticalClippedPair(t *testing.T) {
+	long := strings.Repeat("a", 80)
+	rep := &report.Report{Drift: []report.ResourceReport{{
+		Address: "azurerm_x.y",
+		Action:  "Update",
+		Attrs:   []plan.AttrDiff{{Path: "storage_profile", Old: long + "one", New: long + "two"}},
+	}}}
+
+	got := Render(rep, Options{})
+
+	if !strings.Contains(got, "`storage_profile` changed — too long to show here") {
+		t.Errorf("identical clipped pair is not handled:\n%s", got)
+	}
+	if strings.Contains(got, "→") {
+		t.Errorf("printed a diff between two identical strings:\n%s", got)
+	}
+}
+
+func TestRenderClipsALongDeprecationDetail(t *testing.T) {
+	rep := &report.Report{Deprecations: []report.Deprecation{{
+		Summary: "Deprecated Resource",
+		Detail:  strings.Repeat("word ", 100),
+	}}}
+
+	got := Render(rep, Options{})
+
+	line := ""
+	for _, l := range strings.Split(got, "\n") {
+		if strings.Contains(l, "word") {
+			line = l
+		}
+	}
+	if n := len([]rune(line)); n > maxDetailChars+10 {
+		t.Errorf("detail line is %d runes, want it clipped near %d: %q", n, maxDetailChars, line)
+	}
+	if !strings.HasSuffix(line, "…") {
+		t.Errorf("clipped detail should end in an ellipsis: %q", line)
+	}
+}
+
+func TestActionReadsAsSomethingThatHappened(t *testing.T) {
+	for in, want := range map[string]string{
+		"Update":  "updated",
+		"Delete":  "deleted outside Terraform",
+		"Created": "created outside Terraform",
+	} {
+		if got := action(in); got != want {
+			t.Errorf("action(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -101,7 +101,11 @@ func prOpts(method, endpoint string, body any, out any) reqOpts {
 	}
 	if body != nil {
 		o.body = body
-		o.contentType = "application/json"
+		// The charset is load-bearing. Without it Azure DevOps decodes the body
+		// as ASCII and silently drops every character above it, so a comment
+		// arrives with its em dashes, arrows and ellipses missing - "updated"
+		// where "— updated" was written.
+		o.contentType = "application/json; charset=utf-8"
 	}
 	return o
 }

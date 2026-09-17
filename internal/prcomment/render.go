@@ -31,6 +31,14 @@ const maxPerSection = 10
 // sites, retired resources.
 const maxDetail = 3
 
+// Character caps. An attribute value is JSON and can be a whole block; a
+// provider's deprecation notice can be a paragraph. Both are shown in full on
+// the tf-snag tab.
+const (
+	maxValueChars  = 60
+	maxDetailChars = 200
+)
+
 // Options carry the context the report itself does not know about.
 type Options struct {
 	// Context is the line under the heading, e.g. the pipeline and branch.
@@ -151,14 +159,21 @@ func writeDrift(b *strings.Builder, items []report.ResourceReport) {
 			fmt.Fprintf(b, "\n…and %d more.\n", len(items)-maxPerSection)
 			return
 		}
-		fmt.Fprintf(b, "- **`%s`** — %s%s\n", d.Address, strings.ToLower(d.Action),
+		fmt.Fprintf(b, "- **`%s`** — %s%s\n", d.Address, action(d.Action),
 			badges(d.BaselineState, d.Unsuppressed, d.FirstSeen))
 		for j, a := range d.Attrs {
 			if j == maxDetail {
 				fmt.Fprintf(b, "  - …and %s\n", plural(len(d.Attrs)-maxDetail, "more attribute", "more attributes"))
 				break
 			}
-			fmt.Fprintf(b, "  - `%s`: `%s` → `%s`\n", a.Path, short(value(a.Old)), short(value(a.New)))
+			from, to := short(value(a.Old)), short(value(a.New))
+			// Two values that differ only past the clip would print as an
+			// identical pair, which reads as a finding about nothing.
+			if from == to {
+				fmt.Fprintf(b, "  - `%s` changed — too long to show here\n", a.Path)
+				continue
+			}
+			fmt.Fprintf(b, "  - `%s`: `%s` → `%s`\n", a.Path, from, to)
 		}
 	}
 }
@@ -175,7 +190,9 @@ func writeDeprecations(b *strings.Builder, items []report.Deprecation) {
 		}
 		fmt.Fprintf(b, "- **%s**%s\n", d.Summary, badges(d.BaselineState, d.Unsuppressed, d.FirstSeen))
 		if d.Detail != "" {
-			fmt.Fprintf(b, "  - %s\n", oneLine(d.Detail))
+			// Provider notices run to a paragraph. The first sentence or two is
+			// what a reviewer needs; the tab carries the rest.
+			fmt.Fprintf(b, "  - %s\n", clip(oneLine(d.Detail), maxDetailChars))
 		}
 		for j, s := range d.Sites {
 			if j == maxDetail {
@@ -284,15 +301,33 @@ func location(s report.DeprecationSite) string {
 	}
 }
 
+// action puts the plan's verb in the past tense, so a line reads as something
+// that happened rather than something being requested.
+func action(a string) string {
+	switch strings.ToLower(strings.TrimSpace(a)) {
+	case "create", "created":
+		return "created outside Terraform"
+	case "delete", "deleted":
+		return "deleted outside Terraform"
+	case "update", "updated":
+		return "updated"
+	default:
+		return strings.ToLower(a)
+	}
+}
+
 // short keeps a long attribute value from turning one finding into a wall of
 // JSON. The tab and the report carry the whole thing.
 func short(v string) string {
-	v = oneLine(v)
-	const max = 60
-	if len([]rune(v)) <= max {
-		return v
+	return clip(oneLine(v), maxValueChars)
+}
+
+func clip(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
 	}
-	return string([]rune(v)[:max]) + "…"
+	return strings.TrimRight(string(r[:max]), " ") + "…"
 }
 
 // value renders an attribute value the way the rest of the report does: JSON, so
