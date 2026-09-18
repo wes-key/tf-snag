@@ -1,0 +1,114 @@
+# tf-snag as a step template: install, plan, check.
+#
+# Reference this instead of copying the steps into every pipeline:
+#
+#   resources:
+#     repositories:
+#       - repository: tf-snag
+#         type: github
+#         name: wes-key/tf-snag
+#         endpoint: <your GitHub service connection>
+#
+#   steps:
+#     - template: examples/templates/tf-snag-steps.yml@tf-snag
+#       parameters:
+#         azureSubscription: my-service-connection
+#         planLogDir: terraform
+#
+# It covers the parts every pipeline repeats. The surfaces that need decisions -
+# work items, Teams, the exceptions register, pull request comments - are not
+# parameters here: they need permissions granted and, for the register, a
+# `resources.repositories` entry in the calling pipeline, so they belong where
+# somebody can see them. See ../pipelines/scheduled.yml.
+
+parameters:
+  - name: azureSubscription
+    displayName: Service connection Terraform plans with
+    type: string
+
+  - name: terraformDirectory
+    displayName: Directory holding the Terraform configuration
+    type: string
+    default: terraform
+
+  # Repo-relative directory the plan ran in. Prepended to deprecation file
+  # locations so the links in the tab resolve from the repository root. Usually
+  # the same as terraformDirectory; empty when Terraform runs at the root.
+  - name: planLogDir
+    type: string
+    default: terraform
+
+  - name: checks
+    displayName: 'all, drift, deprecations, or with retirements: all,retirements'
+    type: string
+    default: all,retirements
+
+  - name: retirementsFailWithin
+    displayName: Only let retirements this close fail the run, in days
+    type: string
+    default: '90'
+
+  - name: terraformVersion
+    type: string
+    default: latest
+
+  - name: tfSnagVersion
+    displayName: A release tag to pin, or latest
+    type: string
+    default: latest
+
+  # `warning` marks the run "succeeded with issues"; `failure` fails it.
+  - name: onDrift
+    type: string
+    default: warning
+    values: [warning, failure, none]
+
+  # Pass the previous run's reports in to get provenance - which findings are
+  # new, and how long the rest have been there. Empty means every finding reads
+  # as new. See ../pipelines/scheduled.yml for the artifact round trip.
+  - name: baseline
+    type: string
+    default: $(Pipeline.Workspace)/prev/tf-snag.sarif
+
+steps:
+  - task: TerraformInstaller@1
+    displayName: Install Terraform
+    inputs:
+      terraformVersion: ${{ parameters.terraformVersion }}
+
+  - task: tf-snag-install@0
+    displayName: Install tf-snag (${{ parameters.tfSnagVersion }})
+    inputs:
+      version: ${{ parameters.tfSnagVersion }}
+
+  - task: AzureCLI@2
+    displayName: Terraform plan
+    inputs:
+      azureSubscription: ${{ parameters.azureSubscription }}
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -eu -o pipefail
+
+        export ARM_CLIENT_ID=$servicePrincipalId
+        export ARM_CLIENT_SECRET=$servicePrincipalKey
+        export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+        export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+
+        terraform -chdir=${{ parameters.terraformDirectory }} init
+
+        # The plan file carries the resources; the -json log carries the
+        # deprecation warnings, which the plan file does not contain.
+        terraform -chdir=${{ parameters.terraformDirectory }} plan -out tfplan -json > plan.jsonl
+        terraform -chdir=${{ parameters.terraformDirectory }} show -json tfplan > plan.json
+
+  - task: tf-snag@0
+    displayName: Drift check
+    inputs:
+      planLogDir: ${{ parameters.planLogDir }}
+      checks: ${{ parameters.checks }}
+      retirementsFailWithin: ${{ parameters.retirementsFailWithin }}
+      baseline: ${{ parameters.baseline }}
+      onDrift: ${{ parameters.onDrift }}
+      publishSummary: true

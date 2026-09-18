@@ -1,0 +1,142 @@
+# tf-snag: the scheduled drift check.
+#
+# Runs every weekday morning against real infrastructure and reports what
+# changed outside Terraform, what the provider has deprecated, and what Azure
+# has announced a retirement date for. Nothing is applied.
+#
+# What makes this different from minimal.yml is provenance: each run publishes
+# its report as an artifact, and the next run reads it back as a baseline. That
+# is what lets tf-snag say a finding is *new* rather than one of forty that have
+# been there for months - and "new" is what the Teams card, the work items and
+# the badges in the tab all key off.
+#
+# Before it runs:
+#   - install the tf-snag extension (Organization settings -> Extensions)
+#   - change `azureSubscription` to your own service connection
+#   - grant the <Project> Build Service the permissions for whichever surfaces
+#     you turn on, listed against each input below
+#   - set the `teamsWebhook` secret variable if you want the card; without it
+#     nothing is posted and nothing fails
+
+trigger: none
+pr: none
+
+schedules:
+  - cron: "0 6 * * 1-5"
+    displayName: Weekday 06:00 UTC drift check
+    branches:
+      include: [main]
+    always: true          # run even when nothing has been committed
+
+pool:
+  vmImage: ubuntu-latest
+
+parameters:
+  # Parameters rather than variables so they appear as dropdowns when queuing a
+  # run by hand: a variable declared in YAML is fixed at compile time.
+  - name: workItems
+    displayName: Raise Azure Boards work items
+    type: string
+    default: dry-run
+    values: [dry-run, 'on', 'off']
+  - name: teamsNotify
+    displayName: Post to Teams
+    type: string
+    default: new
+    values: [new, findings, always]
+
+# The exceptions register writes to the wiki's own Git repository, which is a
+# *different* repository from this one. Azure DevOps scopes a job's token to the
+# repositories the pipeline names, before any permission is consulted - so
+# without this block the register gets a 404 however much access the build
+# service has been granted. Delete it if you are not using `wikiPage`.
+resources:
+  repositories:
+    - repository: wiki
+      type: git
+      name: MyProject.wiki        # <- your project's wiki repository
+
+jobs:
+  - job: drift
+    displayName: Detect drift
+    uses:
+      repositories: [wiki]        # brings the wiki into this job's token scope
+    steps:
+      - checkout: self
+
+      - task: TerraformInstaller@1
+        displayName: Install Terraform
+        inputs:
+          terraformVersion: latest
+
+      - task: tf-snag-install@0
+        displayName: Install tf-snag
+
+      # The previous run's reports. tf-snag.sarif from it is the baseline, which
+      # is what stamps each finding new / updated with a first-seen time.
+      - task: DownloadPipelineArtifact@2
+        displayName: Fetch the previous run's reports
+        continueOnError: true                   # the first run has no predecessor
+        inputs:
+          source: specific
+          project: $(System.TeamProjectId)
+          pipeline: $(System.DefinitionId)      # this pipeline
+          runVersion: latestFromBranch
+          runBranch: $(Build.SourceBranch)
+          # A run with findings is "succeeded with issues". Without this, the
+          # newest completed run is never found and every run starts from zero.
+          allowPartiallySucceededBuilds: true
+          artifact: tf-snag
+          path: $(Pipeline.Workspace)/prev      # where tf-snag@0 looks by default
+
+      - task: AzureCLI@2
+        displayName: Terraform plan
+        inputs:
+          azureSubscription: my-service-connection   # <- yours
+          scriptType: bash
+          scriptLocation: inlineScript
+          addSpnToEnvironment: true
+          inlineScript: |
+            set -eu -o pipefail
+
+            export ARM_CLIENT_ID=$servicePrincipalId
+            export ARM_CLIENT_SECRET=$servicePrincipalKey
+            export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+            export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+
+            terraform -chdir=terraform init
+
+            # The plan file carries the resources; the -json log carries the
+            # deprecation warnings, which the plan file does not contain.
+            terraform -chdir=terraform plan -out tfplan -json > plan.jsonl
+            terraform -chdir=terraform show -json tfplan > plan.json
+
+      - task: tf-snag@0
+        displayName: Drift, deprecation and retirement check
+        inputs:
+          planLogDir: terraform
+
+          # `all` is drift + deprecations. Retirements come from a catalogue
+          # rather than from the plan, so they are opted into by name.
+          checks: all,retirements
+          # Only let a retirement fail the run when it is this close. Anything
+          # further out is still reported and badged, but only warns.
+          retirementsFailWithin: '90'
+
+          # Azure Boards. Needs "Edit work items in this node" on the area path.
+          # Start on dry-run: it exercises the token, the dedup query and the
+          # permission check without writing anything.
+          workItems: ${{ parameters.workItems }}
+
+          # The exceptions register: every ignore rule, what it waives and what
+          # it is currently suppressing. Needs "Contribute" on the wiki
+          # repository, and the resources block above.
+          wikiPage: /tf-snag/Exceptions
+
+          # Teams. An unset variable leaves the macro unexpanded, which the task
+          # reads as "not configured" - so this is safe to leave in place.
+          teamsWebhook: $(teamsWebhook)
+          teamsNotify: ${{ parameters.teamsNotify }}
+
+          # A drift report is worth reading on the run itself, too.
+          publishSummary: true

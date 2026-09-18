@@ -64,6 +64,11 @@ jobs:
             xargs -0 -n1 node --check
       - name: Lint the task manifests
         run: node tools/check-tasks.js
+      # The examples are copied verbatim by whoever is getting started, so an
+      # input renamed without updating them fails on somebody's agent rather
+      # than here. This is the "here".
+      - name: Lint the pipeline examples
+        run: node tools/check-examples.js
       - run: npm ci --no-audit --no-fund
       # Packaged exactly as prod publishes it, public flag included, so a manifest
       # the Marketplace would refuse fails here rather than after the merge.

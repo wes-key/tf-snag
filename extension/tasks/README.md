@@ -21,6 +21,10 @@ carry. The whole check is now:
 
 ## The full pipeline
 
+Ready-to-run versions of everything below are in
+[`examples/`](../../examples/) — copy one rather than assembling it from this
+page.
+
 A scheduled drift check against real infrastructure, with provenance, work items
 and a Teams card — the shape
 `../tf-snag-test-resources/pipelines/tf-snag.yml` uses:
