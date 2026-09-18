@@ -98,8 +98,11 @@ flag is in the [CLI reference](https://github.com/wes-key/tf-snag/wiki/CLI-Refer
     planLogDir: terraform   # the plan ran with -chdir=terraform
 ```
 
-See [Azure DevOps Pipelines](https://github.com/wes-key/tf-snag/wiki/Azure-DevOps-Pipelines)
-for the full pipeline, or for running the CLI without the extension.
+Copy a working pipeline from [`examples/`](examples/): a minimal check, a
+scheduled drift check with provenance, work items, Teams and a wiki register, and
+a pull request check that comments its findings on the pull request. See
+[Azure DevOps Pipelines](https://github.com/wes-key/tf-snag/wiki/Azure-DevOps-Pipelines)
+for what each input does, or for running the CLI without the extension.
 
 ## Contributing
 

@@ -1,0 +1,62 @@
+# tf-snag: the smallest pipeline that works.
+#
+# Plans your Terraform, checks the plan, and puts the findings on a tf-snag tab
+# on the run. Nothing is applied and nothing is written anywhere else.
+#
+# Before it runs:
+#   - install the tf-snag extension in your organisation (Organization settings
+#     -> Extensions)
+#   - change `azureSubscription` below to your own service connection
+#   - change `terraform/` if your configuration lives elsewhere
+#
+# Findings mark the run "succeeded with issues" rather than failing it: the run
+# did its job, and the finding is the point. `onDrift: failure` changes that.
+
+trigger: none          # run it by hand first; scheduled.yml is the real thing
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+steps:
+  - checkout: self
+
+  - task: TerraformInstaller@1
+    displayName: Install Terraform
+    inputs:
+      terraformVersion: latest
+
+  - task: tf-snag-install@0
+    displayName: Install tf-snag
+
+  - task: AzureCLI@2
+    displayName: Terraform plan
+    inputs:
+      azureSubscription: my-service-connection   # <- yours
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -eu -o pipefail
+
+        # Terraform reads these; the service connection supplies them.
+        export ARM_CLIENT_ID=$servicePrincipalId
+        export ARM_CLIENT_SECRET=$servicePrincipalKey
+        export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+        export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+
+        terraform -chdir=terraform init
+
+        # Two files, because they carry different things. The plan file has the
+        # resources; the -json log has the deprecation warnings, which the plan
+        # file does not contain at all.
+        terraform -chdir=terraform plan -out tfplan -json > plan.jsonl
+        terraform -chdir=terraform show -json tfplan > plan.json
+
+  - task: tf-snag@0
+    displayName: Drift check
+    inputs:
+      # The plan ran with -chdir=terraform, so its file locations are relative
+      # to that directory. This prepends it, which is what makes the links in
+      # the tab resolve from the repository root.
+      planLogDir: terraform

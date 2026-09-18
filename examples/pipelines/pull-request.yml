@@ -1,0 +1,104 @@
+# tf-snag: the pull request check.
+#
+# Plans the estate as the pull request would leave it, and comments the findings
+# onto the pull request so a reviewer reads them in the conversation rather than
+# on a build tab. It reports; it does not raise work items or post to Teams -
+# a pull request that is never merged should leave nothing behind.
+#
+# HOW IT TRIGGERS. Azure Repos ignores the `pr:` trigger below; that is a GitHub
+# feature. A pull request build here comes from a branch policy:
+#
+#   Project settings -> Repositories -> (repository) -> Policies ->
+#   Branch policies (main) -> Build validation -> +
+#     Build pipeline: this pipeline
+#     Trigger:        Automatic
+#     Policy:         Optional to start with, Required once you trust it
+#
+# Before it runs:
+#   - install the tf-snag extension (Organization settings -> Extensions)
+#   - change `azureSubscription` to your own service connection
+#   - grant the <Project> Build Service "Contribute to pull requests" on the
+#     repository, or the comment is refused with a 403
+#   - set `baselinePipelineId` below to your scheduled drift pipeline
+
+trigger: none
+pr: none               # Azure Repos ignores this - see the branch policy above
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # The scheduled drift pipeline, whose runs on the target branch are this
+  # check's baseline. Pointing this at itself is the obvious thing and fails
+  # with "No builds currently exist in the pipeline definition supplied": a
+  # pull request pipeline never builds up a picture of main to compare against.
+  baselinePipelineId: 0        # <- your scheduled pipeline's definition id
+
+steps:
+  - checkout: self
+
+  - task: TerraformInstaller@1
+    displayName: Install Terraform
+    inputs:
+      terraformVersion: latest
+
+  - task: tf-snag-install@0
+    displayName: Install tf-snag
+
+  - task: DownloadPipelineArtifact@2
+    displayName: Fetch the target branch's reports
+    # Not fatal: the scheduled pipeline may not have run yet, and a check that
+    # cannot say what is new is still worth having.
+    continueOnError: true
+    inputs:
+      source: specific
+      project: $(System.TeamProjectId)
+      pipeline: $(baselinePipelineId)
+      runVersion: latestFromBranch
+      runBranch: $(System.PullRequest.TargetBranch)   # refs/heads/main
+      allowPartiallySucceededBuilds: true             # findings => "succeeded with issues"
+      artifact: tf-snag
+      path: $(Pipeline.Workspace)/prev
+
+  - task: AzureCLI@2
+    displayName: Terraform plan
+    inputs:
+      azureSubscription: my-service-connection   # <- yours
+      scriptType: bash
+      scriptLocation: inlineScript
+      addSpnToEnvironment: true
+      inlineScript: |
+        set -eu -o pipefail
+
+        export ARM_CLIENT_ID=$servicePrincipalId
+        export ARM_CLIENT_SECRET=$servicePrincipalKey
+        export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+        export ARM_TENANT_ID=$(az account show --query tenantId -o tsv)
+
+        terraform -chdir=terraform init
+        terraform -chdir=terraform plan -out tfplan -json > plan.jsonl
+        terraform -chdir=terraform show -json tfplan > plan.json
+
+  - task: tf-snag@0
+    displayName: Drift, deprecation and retirement check
+    inputs:
+      planLogDir: terraform
+      checks: all,retirements
+      retirementsFailWithin: '90'
+
+      # Comment the findings on the pull request. `new` is relative to the
+      # baseline above: what this pull request adds, not what the target branch
+      # already carries. Needs "Contribute to pull requests" on the repository.
+      prComment: new
+
+      # A pull request check reports. Work items and Teams belong on the
+      # scheduled run, where the estate's history lives.
+      workItems: 'off'
+      publishSummary: true
+
+      # Findings mark the run "succeeded with issues". Switch to `failure` once
+      # you are ready for the policy to block a merge - and note that drift is
+      # the estate's, not this pull request's, so it will block changes that had
+      # nothing to do with it. `checks: deprecations,retirements` is the usual
+      # answer to that.
+      onDrift: warning
