@@ -265,3 +265,62 @@ func TestFailWindowNarrowsTheGateButNotTheReport(t *testing.T) {
 		t.Errorf("junit marks a deferred retirement as a failure:\n%s", junit.String())
 	}
 }
+
+// A retirement that has just appeared is newly actionable. Leaving retirements
+// out of this is what made -teams-notify new and -pr-comment new silent about a
+// resource that had just landed on a published retirement notice.
+func TestHasNewlyActionableIncludesRetirements(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rt   Retirement
+		want bool
+	}{
+		{"new", Retirement{ID: "a", BaselineState: "new"}, true},
+		{"no longer ignored", Retirement{ID: "a", Unsuppressed: true}, true},
+		{"carried over", Retirement{ID: "a", BaselineState: "updated"}, false},
+		{"still ignored", Retirement{ID: "a", BaselineState: "new", Suppressed: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rep := &Report{Retirements: []Retirement{tc.rt}}
+			if got := rep.HasNewlyActionable(); got != tc.want {
+				t.Errorf("HasNewlyActionable() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A retirement has to be stamped against the baseline like anything else.
+// Without it the fields existed and were never set, so "new" was unreachable:
+// no Teams card, no pull request comment, no work item under -ado-raise new.
+func TestStampReportMarksRetirementsNewAndCarriedOver(t *testing.T) {
+	prev := `{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"tf-snag","rules":[]}},"results":[{` +
+		`"ruleId":"retirement","guid":"` + (Retirement{ID: "azure-lb-basic-sku"}).FindingID() + `",` +
+		`"level":"error","message":{"text":"Basic SKU load balancers retire"},` +
+		`"provenance":{"firstDetectionTimeUtc":"2026-01-02T03:04:05Z"}}]}]}`
+	prior, err := ParsePriorSARIF([]byte(prev))
+	if err != nil {
+		t.Fatalf("ParsePriorSARIF: %v", err)
+	}
+
+	rep := &Report{Retirements: []Retirement{
+		{ID: "azure-lb-basic-sku"},           // in the baseline
+		{ID: "azure-vpn-gateway-legacy-sku"}, // not in the baseline
+	}}
+	prior.StampReport(rep)
+
+	if got := rep.Retirements[0].BaselineState; got != "updated" {
+		t.Errorf("carried-over retirement state = %q, want updated", got)
+	}
+	if got := rep.Retirements[0].FirstSeen; got != "2026-01-02T03:04:05Z" {
+		t.Errorf("first seen = %q, want the prior run's timestamp", got)
+	}
+	if got := rep.Retirements[1].BaselineState; got != "new" {
+		t.Errorf("unmatched retirement state = %q, want new", got)
+	}
+	if rep.Retirements[1].FirstSeen == "" {
+		t.Error("a new retirement should be stamped with a first-seen time")
+	}
+	if !rep.HasNewlyActionable() {
+		t.Error("a new retirement is newly actionable: this is what -pr-comment new asks")
+	}
+}

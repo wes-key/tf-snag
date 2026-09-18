@@ -25,6 +25,7 @@ import (
 	"github.com/wes-key/tf-snag/internal/ado"
 	"github.com/wes-key/tf-snag/internal/ignore"
 	"github.com/wes-key/tf-snag/internal/plan"
+	"github.com/wes-key/tf-snag/internal/prcomment"
 	"github.com/wes-key/tf-snag/internal/report"
 	"github.com/wes-key/tf-snag/internal/retire"
 	"github.com/wes-key/tf-snag/internal/teams"
@@ -156,6 +157,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	wikiPage := fs.String("wiki-page", "", "Azure DevOps wiki `path` to publish the exceptions register to, e.g. /tf-snag/Exceptions; needs -ado-url")
 	wikiName := fs.String("wiki", "", "wiki `name` or id to write to (default: the project wiki, or the only wiki when there is one)")
 	wikiDryRun := fs.Bool("wiki-dry-run", false, "report what would be written to the wiki, and print the page, without changing anything")
+	prComment := fs.String("pr-comment", "off", "comment the findings on the pull request being built: off, `findings` (anything un-suppressed) or new (only what this pull request adds). Needs -ado-url")
+	prID := fs.String("pr-id", "", "pull request `id` to comment on (default: $SYSTEM_PULLREQUEST_PULLREQUESTID, which only a PR build sets)")
+	prRepo := fs.String("pr-repo", "", "`repository` id or name the pull request is in (default: $BUILD_REPOSITORY_ID)")
+	prDryRun := fs.Bool("pr-comment-dry-run", false, "print the comment that would be posted, and post nothing")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	fs.Usage = func() {
 		writeWordmark(stderr, bannerColor(*color, stderr))
@@ -221,6 +226,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *wikiPage != "" && *adoURL == "" {
 		fmt.Fprintln(stderr, "tf-snag: -wiki-page needs -ado-url to say which project's wiki to write to")
+		return 2
+	}
+	prMode, err := parsePRComment(*prComment)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	if prMode != "off" && *adoURL == "" {
+		fmt.Fprintln(stderr, "tf-snag: -pr-comment needs -ado-url to say which project the pull request is in")
 		return 2
 	}
 	if *planPath != "" && !driftOn && !retireOn {
@@ -411,6 +425,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 
+	if prMode != "off" {
+		cfg := prConfig{
+			url:     *adoURL,
+			token:   firstNonEmpty(*adoToken, os.Getenv("TF_SNAG_ADO_TOKEN")),
+			mode:    prMode,
+			id:      firstNonEmpty(*prID, os.Getenv("SYSTEM_PULLREQUEST_PULLREQUESTID")),
+			repo:    firstNonEmpty(*prRepo, os.Getenv("BUILD_REPOSITORY_ID")),
+			dryRun:  *prDryRun,
+			runURL:  *runURL,
+			context: *teamsContext,
+		}
+		if code := commentOnPR(rep, cfg, stderr); code != 0 {
+			return code
+		}
+	}
+
 	if hook != "" {
 		if code := postTeams(rep, hook, teamsOpts, notify, stderr); code != 0 {
 			return code
@@ -500,6 +530,89 @@ func publishExceptions(rep *report.Report, set *ignore.Set, cfg wikiConfig, stde
 	fmt.Fprintln(stderr, "wiki: writing to "+target.Describe())
 
 	if _, err := wiki.Publish(wiki.Client{Client: client}, target, cfg.page, page, cfg.dryRun, stderr); err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+	return 0
+}
+
+type prConfig struct {
+	url, token      string
+	mode            string // findings | new
+	id, repo        string
+	dryRun          bool
+	runURL, context string
+}
+
+// parsePRComment validates -pr-comment. "always" is deliberately absent: a
+// comment on every pull request that found nothing is the kind of check people
+// learn to scroll past, and a clean run already leaves a green build.
+func parsePRComment(s string) (string, error) {
+	switch v := strings.ToLower(strings.TrimSpace(s)); v {
+	case "", "off", "findings", "new":
+		if v == "" {
+			return "off", nil
+		}
+		return v, nil
+	default:
+		return "", fmt.Errorf("-pr-comment must be off, findings or new (got %q)", s)
+	}
+}
+
+// commentOnPR puts the findings on the pull request being built, as one thread
+// tf-snag keeps up to date.
+//
+// Outside a pull request build there is nothing to comment on. That is not an
+// error: the same pipeline definition runs on a schedule and on a PR, and the
+// input should not have to be switched off for one of them.
+func commentOnPR(rep *report.Report, cfg prConfig, stderr io.Writer) int {
+	if cfg.id == "" {
+		fmt.Fprintln(stderr, "pr: not a pull request build (no -pr-id and no $SYSTEM_PULLREQUEST_PULLREQUESTID) — commenting on nothing")
+		return 0
+	}
+	id, err := strconv.Atoi(strings.TrimSpace(cfg.id))
+	if err != nil || id <= 0 {
+		fmt.Fprintf(stderr, "tf-snag: -pr-id must be a pull request number (got %q)\n", cfg.id)
+		return 2
+	}
+	if cfg.repo == "" {
+		fmt.Fprintln(stderr, "tf-snag: -pr-comment needs -pr-repo (or $BUILD_REPOSITORY_ID) to say which repository the pull request is in")
+		return 2
+	}
+	if strings.TrimSpace(cfg.token) == "" {
+		fmt.Fprintln(stderr, "tf-snag: -pr-comment needs a token — pass -ado-token or set $TF_SNAG_ADO_TOKEN")
+		return 2
+	}
+	orgURL, project, err := ado.ParseURL(cfg.url)
+	if err != nil {
+		fmt.Fprintln(stderr, "tf-snag:", err)
+		return 2
+	}
+
+	// Render before deciding: a dry run is for reading the comment, and having
+	// to be able to reach Azure DevOps first makes it useless where it is wanted.
+	// Only list what the pull request adds when the run can actually tell: with
+	// no baseline, "new" has already fallen back to "findings", and a comment
+	// headed "new in this pull request" would be a claim the run cannot support.
+	opts := prcomment.Options{
+		Context: cfg.context,
+		RunURL:  cfg.runURL,
+		OnlyNew: cfg.mode == "new" && rep.IsBaselined(),
+	}
+	body := prcomment.Render(rep, opts)
+	if cfg.dryRun {
+		fmt.Fprintln(stderr, "----- pull request comment (dry run) -----")
+		fmt.Fprint(stderr, body)
+		fmt.Fprintln(stderr, "------------------------------------------")
+	}
+
+	// A run with nothing to say still updates an existing comment, so the thread
+	// stops claiming findings that have since been fixed.
+	clean := !prcomment.ShouldPost(rep, cfg.mode, stderr)
+
+	client := &ado.Client{OrgURL: orgURL, Project: project, Token: cfg.token}
+	target := prcomment.Target{RepoID: cfg.repo, PullRequest: id}
+	if _, err := prcomment.Publish(client, target, body, clean, cfg.dryRun, stderr); err != nil {
 		fmt.Fprintln(stderr, "tf-snag:", err)
 		return 2
 	}
