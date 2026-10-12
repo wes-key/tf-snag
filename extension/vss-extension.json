@@ -5,7 +5,7 @@
   "version": "0.6.0",
   "name": "tf-snag drift report",
   "description": "Pipeline tasks that install and run the tf-snag CLI, plus a \"tf-snag\" run tab showing its drift and deprecation findings with ignore-rule and baseline (first-seen) awareness.",
-  "public": false,
+  "public": true,
   "categories": ["Azure Pipelines"],
   "tags": ["terraform", "drift", "infrastructure", "iac"],
   "targets": [
