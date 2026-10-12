@@ -76,7 +76,7 @@ jobs:
         run: |
           node tools/stamp-tasks.js --version 0.0.0 --channel prod
           npx tfx-cli extension create --manifest-globs vss-extension.json --output-path dist \
-            --override '{"version":"0.0.0","public":true}'
+            --override '{"version":"0.0.0"}'
 
   guard:
     if: startsWith(github.ref, 'refs/tags/v')

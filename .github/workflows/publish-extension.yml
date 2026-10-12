@@ -6,19 +6,20 @@
 #     package (release.yml calls it, after the CLI release if there is one)
 #   - either channel, on demand from the Actions tab - dev is manual only
 #
-# Visibility. vss-extension.json says "public": false, and that is what the dev
-# channel always publishes. Prod publishes public once repo variable
-# EXTENSION_PUBLIC is 'true' - which Microsoft only accepts from a verified
-# publisher, so set it after verification, not before. Until then prod is private
-# and shared with ADO_ORG.
+# Visibility is in the manifests, where a reader of this file can see it:
+# vss-extension.json is "public": true, so prod is listed in the Marketplace and
+# installable by anyone; configs/dev.json overrides it to false, so the dev
+# channel stays private and is shared with ADO_ORG. The Marketplace only accepts
+# a public publish from a verified publisher - an unverified one fails the
+# publish rather than quietly listing nothing.
 #
 # Prerequisites:
 #   - a Marketplace publisher matching vss-extension.json "publisher" (wes-key),
 #     created at https://marketplace.visualstudio.com/manage
 #   - repo secret TFX_MARKETPLACE_TOKEN: an Azure DevOps PAT, "All accessible
 #     organizations", scope Marketplace > Manage, owned by that publisher's account
-#   - repo variable ADO_ORG: the Azure DevOps org to share a private publish with
-#     (not needed for a dry run, or for prod once EXTENSION_PUBLIC is 'true')
+#   - repo variable ADO_ORG: the Azure DevOps org the dev channel is shared with
+#     (dev publishes only; prod is public and cannot be shared)
 #
 # Version published is 0.<minor>.<patch>: minor from the manifest, patch one past
 # the newest the Marketplace already has for that channel (tools/next-version.js).
@@ -207,31 +208,31 @@ jobs:
         env:
           TFX_PAT: ${{ secrets.TFX_MARKETPLACE_TOKEN }}
           ADO_ORG: ${{ vars.ADO_ORG }}
-          EXTENSION_PUBLIC: ${{ vars.EXTENSION_PUBLIC }}
           CHANNEL: ${{ inputs.channel }}
           DRY_RUN: ${{ inputs.dry_run }}
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -eu
-          public=false
-          if [ "$CHANNEL" = prod ] && [ "${EXTENSION_PUBLIC:-}" = "true" ]; then
-            public=true
-          fi
+          # Visibility comes from the manifests, not from a variable: prod is
+          # "public": true in vss-extension.json, dev is "public": false in
+          # configs/dev.json. Whether anybody can install this is too visible a
+          # thing to decide in repository settings, where a reader of the YAML
+          # cannot see it.
           args=(--manifest-globs vss-extension.json --output-path dist
-                --override "{\"version\":\"${VERSION}\",\"public\":${public}}")
+                --override "{\"version\":\"${VERSION}\"}")
           if [ "$CHANNEL" = dev ]; then
             args+=(--overrides-file configs/dev.json)
           fi
-          echo "packaging $CHANNEL v$VERSION, public: $public"
+          echo "packaging $CHANNEL v$VERSION"
           if [ "$DRY_RUN" = "true" ]; then
             npx tfx-cli extension create "${args[@]}"
             exit 0
           fi
-          # A public extension is installable by anyone and cannot also be shared;
-          # a private one is only visible to the orgs it is shared with.
-          if [ "$public" = false ]; then
+          # Only the dev channel is shared: a public extension is installable by
+          # anyone and cannot also be shared with an organisation.
+          if [ "$CHANNEL" = dev ]; then
             if [ -z "${ADO_ORG:-}" ]; then
-              echo "::error::variable ADO_ORG (the org to share the private extension with) is not set" >&2
+              echo "::error::variable ADO_ORG (the org to share the dev extension with) is not set" >&2
               exit 1
             fi
             args+=(--share-with "$ADO_ORG")

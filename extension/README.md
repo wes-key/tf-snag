@@ -97,10 +97,16 @@ the newest the Marketplace already has for that channel (`tools/next-version.js`
 Bump the minor for a deliberate step. The major stays `0` — pipelines reference
 the tasks as `tf-snag@0`, so it is not the CLI's version.
 
-**Visibility.** `prod` publishes **public** once the repo variable
-**`EXTENSION_PUBLIC`** is `true`, and private — shared with `ADO_ORG` — until then.
-The Marketplace only accepts a public extension from a verified publisher, so set
-the variable after verification. The `dev` channel is always private.
+**Visibility** comes from the manifests. `vss-extension.json` is
+`"public": true`, so `prod` is listed in the Marketplace and installable by
+anyone; `configs/dev.json` overrides it to `false`, so `dev` stays private and is
+shared with `ADO_ORG`. A public extension cannot also be shared, which is why
+only the dev channel is.
+
+The Marketplace accepts a public publish only from a **verified publisher**. From
+an unverified one the publish fails outright rather than quietly listing nothing,
+so a failed prod publish complaining about visibility means verification, not
+this repository.
 
 **One-time setup**
 
@@ -110,17 +116,18 @@ the variable after verification. The `dev` channel is always private.
 2. Create an Azure DevOps **PAT**: *All accessible organizations*, scope
    *Marketplace → Manage*, from an account that owns that publisher.
 3. Add it as the GitHub repo secret **`TFX_MARKETPLACE_TOKEN`**.
-4. Set repo variable **`ADO_ORG`** to the Azure DevOps org to share a private
-   publish with.
+4. Set repo variable **`ADO_ORG`** to the Azure DevOps org the `dev` channel is
+   shared with.
+5. Get the publisher **verified**, which the Marketplace requires before it will
+   accept a public extension. Request it from the manage page; Microsoft
+   reviews it.
 
-**Going public**
+**Making it private again**
 
-1. Make `wes-key/tf-snag` public. The install task downloads the CLI from its
-   releases, which nobody outside a private repo can reach.
-2. Request **verification** for the publisher from the Marketplace manage page.
-   Microsoft reviews the request, which can take a few days.
-3. Once verified, set repo variable **`EXTENSION_PUBLIC`** to `true`. The next
-   publish — a merged extension PR, or the workflow run by hand — goes public.
+Set `"public": false` in `vss-extension.json` and publish. Note what that does
+and does not undo: new installs stop, but a free extension can only be *removed*
+from the Marketplace while it has **zero installs**, so anything already
+installed stays installed.
 
 **By hand** — run **Publish ADO extension**
 (`.github/workflows/publish-extension.yml`) from the Actions tab:
